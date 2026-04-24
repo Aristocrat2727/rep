@@ -5,7 +5,6 @@ from datetime import datetime
 from threading import Thread
 from flask import Flask
 from telethon import TelegramClient, events
-from telethon.tl.types import PeerUser
 from telethon.sessions import StringSession
 from aiogram import Bot, Dispatcher, types as aiogram_types
 import nest_asyncio
@@ -29,7 +28,7 @@ conn.commit()
 
 # ========== ГЛОБАЛЬНЫЕ ХРАНИЛИЩА ==========
 active_clients = {}
-saved_messages = {}  # owner_id -> {msg_id: {"sender_id": int, "text": str}}
+saved_messages = {}
 temp_auth = {}
 
 # ========== БОТ ДЛЯ РЕГИСТРАЦИИ ==========
@@ -171,14 +170,17 @@ async def run_userbot(owner_id: int, session_string: str):
     muted_users = {row[0] for row in cursor.fetchall()}
     
     # ========== 1. СОХРАНЕНИЕ ВХОДЯЩИХ СООБЩЕНИЙ ==========
-    @client.on(events.NewMessage(incoming=True))
+    @client.on(events.NewMessage)
     async def save_incoming(event):
-        if not isinstance(event.message.peer_id, PeerUser):
+        # Проверяем что это ЛС и не исходящее
+        if not event.is_private:
+            return
+        if event.out:
             return
         
         sender_id = event.sender_id
-        msg_id = event.message.id
-        text = event.message.text or ""
+        msg_id = event.id
+        text = event.text or ""
         
         # Проверка на мут
         if sender_id in muted_users:
@@ -201,10 +203,11 @@ async def run_userbot(owner_id: int, session_string: str):
     # ========== 2. ОТСЛЕЖИВАНИЕ УДАЛЕНИЙ ==========
     @client.on(events.MessageDeleted)
     async def on_delete(event):
-        if not isinstance(event.chat, PeerUser):
-            return
+        logging.info(f"🔍 Событие удаления для {owner_id}, deleted_ids={event.deleted_ids}")
         
         for msg_id in event.deleted_ids:
+            logging.info(f"🔍 Ищем msg_id={msg_id}")
+            
             # Ищем в памяти
             msg = saved_messages.get(owner_id, {}).get(msg_id)
             
@@ -214,18 +217,21 @@ async def run_userbot(owner_id: int, session_string: str):
                 row = cursor.fetchone()
                 if row:
                     msg = {"sender_id": row[0], "text": row[1]}
+                    logging.info(f"🔍 Нашли в БД: от {row[0]}")
             
             if msg and msg["sender_id"] != owner_id:
+                logging.info(f"✅ Нашли сообщение от {msg['sender_id']}, отправляем уведомление")
                 try:
                     user = await client.get_entity(msg["sender_id"])
                     name = user.first_name or "Пользователь"
+                    username = f" @{user.username}" if user.username else ""
                     
                     await client.send_message(
                         owner_id,
-                        f"🗑 <b>{name}</b> удалил сообщение:\n\n<blockquote>{msg['text'][:500]}</blockquote>",
+                        f"🗑 <b>{name}</b>{username} удалил сообщение:\n\n<blockquote>{msg['text'][:500]}</blockquote>",
                         parse_mode='HTML'
                     )
-                    logging.info(f"📨 {owner_id}: уведомление об удалении от {msg['sender_id']}")
+                    logging.info(f"✅ Уведомление отправлено {owner_id}")
                     
                     # Удаляем из БД
                     cursor.execute('DELETE FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
@@ -236,16 +242,19 @@ async def run_userbot(owner_id: int, session_string: str):
                         del saved_messages[owner_id][msg_id]
                         
                 except Exception as e:
-                    logging.error(f"Ошибка удаления {owner_id}: {e}")
+                    logging.error(f"Ошибка отправки уведомления: {e}")
+            else:
+                logging.info(f"❌ Сообщение {msg_id} не найдено или отправлено самим владельцем")
     
     # ========== 3. ОТСЛЕЖИВАНИЕ ИЗМЕНЕНИЙ ==========
     @client.on(events.MessageEdited)
     async def on_edit(event):
-        if not isinstance(event.message.peer_id, PeerUser) or event.out:
+        if not event.is_private or event.out:
             return
         
         msg_id = event.id
-        new_text = event.message.text or ""
+        new_text = event.text or ""
+        logging.info(f"🔍 Изменение msg_id={msg_id}")
         
         # Ищем в памяти
         msg = saved_messages.get(owner_id, {}).get(msg_id)
@@ -258,36 +267,41 @@ async def run_userbot(owner_id: int, session_string: str):
                 msg = {"sender_id": row[0], "text": row[1]}
         
         if msg and msg["sender_id"] != owner_id and msg["text"] != new_text:
+            logging.info(f"✅ Нашли изменение от {msg['sender_id']}")
             try:
                 user = await client.get_entity(msg["sender_id"])
                 name = user.first_name or "Пользователь"
+                username = f" @{user.username}" if user.username else ""
                 
                 await client.send_message(
                     owner_id,
-                    f"✏️ <b>{name}</b> изменил сообщение:\n\n"
+                    f"✏️ <b>{name}</b>{username} изменил сообщение:\n\n"
                     f"<b>Было:</b>\n<blockquote>{msg['text'][:200]}</blockquote>\n"
                     f"<b>Стало:</b>\n<blockquote>{new_text[:200]}</blockquote>",
                     parse_mode='HTML'
                 )
-                logging.info(f"📨 {owner_id}: уведомление об изменении от {msg['sender_id']}")
+                logging.info(f"✅ Уведомление об изменении отправлено {owner_id}")
                 
                 # Обновляем в БД
                 cursor.execute('UPDATE saved_messages SET text=? WHERE owner_id=? AND msg_id=?', (new_text, owner_id, msg_id))
                 conn.commit()
                 
                 # Обновляем в памяти
-                saved_messages[owner_id][msg_id]["text"] = new_text
+                if msg_id in saved_messages.get(owner_id, {}):
+                    saved_messages[owner_id][msg_id]["text"] = new_text
                 
             except Exception as e:
-                logging.error(f"Ошибка изменения {owner_id}: {e}")
+                logging.error(f"Ошибка отправки уведомления об изменении: {e}")
     
     # ========== 4. КОМАНДЫ ==========
-    @client.on(events.NewMessage(outgoing=True))
+    @client.on(events.NewMessage)
     async def commands(event):
-        if not isinstance(event.message.peer_id, PeerUser):
+        if not event.is_private:
+            return
+        if not event.out:
             return
         
-        text = event.message.text or ""
+        text = event.text or ""
         if not text.startswith('.'):
             return
         
@@ -301,10 +315,10 @@ async def run_userbot(owner_id: int, session_string: str):
 
 <blockquote>
 <b>.help</b> - эта справка
-<b>.mute</b> (ответ) - заглушить пользователя
-<b>.unmute</b> (ответ) - разглушить
+<b>.mute</b> (ответ на сообщение) - заглушить пользователя
+<b>.unmute</b> (ответ на сообщение) - разглушить
 <b>.list</b> - список замьюченных
-<b>.info</b> (ответ) - информация о пользователе
+<b>.info</b> (ответ на сообщение) - информация о пользователе
 <b>.type [текст]</b> - эффект печати
 <b>.spam [кол-во] [текст]</b> - спам (макс 20)
 </blockquote>
