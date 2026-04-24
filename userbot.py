@@ -9,7 +9,7 @@ from telethon.tl import types
 from telethon.tl.types import PeerUser
 from telethon.sessions import StringSession
 from aiogram import Bot, Dispatcher, types as aiogram_types
-from aiogram.utils import executor
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
 import nest_asyncio
 
 nest_asyncio.apply()
@@ -24,11 +24,8 @@ ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
 conn = sqlite3.connect('userbot.db', check_same_thread=False)
 cursor = conn.cursor()
 
-# Таблица для сообщений (отслеживание удалений/изменений)
 cursor.execute('''CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, msg_id INTEGER, user_id INTEGER, chat_id INTEGER, text TEXT, date TEXT)''')
-# Таблица для замьюченных пользователей
 cursor.execute('''CREATE TABLE IF NOT EXISTS muted_users (user_id INTEGER PRIMARY KEY)''')
-# Таблица для сессий зарегистрированных пользователей
 cursor.execute('''CREATE TABLE IF NOT EXISTS user_sessions (user_id INTEGER PRIMARY KEY, session_string TEXT)''')
 conn.commit()
 
@@ -42,6 +39,7 @@ user_client = TelegramClient('ub', API_ID, API_HASH)
 # ========== БОТ ДЛЯ РЕГИСТРАЦИИ ==========
 reg_bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(reg_bot)
+dp.middleware.setup(LoggingMiddleware())
 temp_reg_data = {}
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
@@ -53,6 +51,17 @@ async def get_user_info(user_id):
         return username, name, user
     except:
         return "", "Неизвестный пользователь", None
+
+def send_bot_message_sync(text):
+    try:
+        import telebot
+        telebot.TeleBot(BOT_TOKEN).send_message(owner_id, text, parse_mode='HTML', disable_web_page_preview=True)
+    except Exception as e:
+        print(f"Bot send error: {e}")
+
+async def send_bot_message(text):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, send_bot_message_sync, text)
 
 async def check_is_owner(event):
     return event.message.sender_id == owner_id
@@ -67,7 +76,7 @@ async def get_owner_id():
     me = await user_client.get_me()
     return me.id
 
-# ========== ОБРАБОТЧИКИ ДЛЯ ТВОЕГО ЮЗЕРБОТА ==========
+# ========== ОБРАБОТЧИКИ ДЛЯ ЮЗЕРБОТА ==========
 
 @user_client.on(events.Raw(types.UpdateDeleteMessages))
 async def raw_deleted_handler(event):
@@ -81,10 +90,7 @@ async def raw_deleted_handler(event):
                         user_id = row[0]
                         if user_id != owner_id:
                             username, name, user = await get_user_info(user_id)
-                            if username:
-                                link = f"https://t.me/{username}"
-                            else:
-                                link = f"tg://user?id={user_id}"
+                            link = f"https://t.me/{username}" if username else f"tg://user?id={user_id}"
                             message_text = f"🗑 Это сообщение было удалено\n\n<blockquote><a href=\"{link}\">{name}</a>\n{text}</blockquote>"
                             await send_bot_message(message_text)
                         cursor.execute('DELETE FROM messages WHERE msg_id=? AND chat_id=?', (msg_id, chat_id))
@@ -110,10 +116,7 @@ async def raw_edit_handler(event):
                         new_text = msg.text or msg.message or ''
                         if new_text and new_text != old_text:
                             username, name, user = await get_user_info(user_id)
-                            if username:
-                                link = f"https://t.me/{username}"
-                            else:
-                                link = f"tg://user?id={user_id}"
+                            link = f"https://t.me/{username}" if username else f"tg://user?id={user_id}"
                             message_text = f"🔏 <a href=\"{link}\">{name}</a> изменил сообщение.\n\nСтарый текст:\n<blockquote>{old_text}</blockquote>\nНовый текст:\n<blockquote>{new_text}</blockquote>"
                             await send_bot_message(message_text)
                             cursor.execute('UPDATE messages SET text=? WHERE msg_id=? AND chat_id=?', (new_text, msg.id, peer.user_id))
@@ -144,7 +147,6 @@ async def mute_handler(event):
             await event.edit('💬 Использование: .mute (в ответ на сообщение)')
     except Exception as e:
         print(f"Mute error: {e}")
-        await event.edit('💬 Использование: .mute (в ответ на сообщение)')
 
 @user_client.on(events.NewMessage(outgoing=True, pattern=r'^\.unmute$'))
 async def unmute_handler(event):
@@ -168,7 +170,6 @@ async def unmute_handler(event):
             await event.edit('💬 Использование: .unmute (в ответ на сообщение)')
     except Exception as e:
         print(f"Unmute error: {e}")
-        await event.edit('💬 Использование: .unmute (в ответ на сообщение)')
 
 @user_client.on(events.NewMessage(incoming=True))
 async def incoming_message_handler(event):
@@ -212,7 +213,6 @@ async def type_handler(event):
             await asyncio.sleep(0.5)
     except Exception as e:
         print(f"Type error: {e}")
-        await event.edit('💬 Использование: .type [текст]')
 
 @user_client.on(events.NewMessage(outgoing=True, pattern=r'^\.spam '))
 async def spam_handler(event):
@@ -271,7 +271,6 @@ async def info_handler(event):
             await event.edit('Ответьте на сообщение!')
     except Exception as e:
         print(f"Info error: {e}")
-        await event.edit('Ответьте на сообщение!')
 
 @user_client.on(events.NewMessage(outgoing=True, pattern=r'^\.help( .*)?$'))
 async def help_handler(event):
@@ -403,7 +402,11 @@ async def main():
     print(f"✅ Замученных пользователей: {len(muted_users)}")
     await user_client.run_until_disconnected()
 
+def start_aiogram():
+    from aiogram.utils import executor
+    executor.start_polling(dp, skip_updates=True)
+
 if __name__ == "__main__":
     Thread(target=run_web, daemon=True).start()
-    Thread(target=lambda: executor.start_polling(dp, skip_updates=True), daemon=True).start()
+    Thread(target=start_aiogram, daemon=True).start()
     asyncio.run(main())
