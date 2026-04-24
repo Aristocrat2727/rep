@@ -1,3 +1,4 @@
 telethon
-pyTelegramBotAPI
+aiogram
+flask
 nest-asyncio
