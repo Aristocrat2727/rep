@@ -21,23 +21,19 @@ API_HASH = os.environ.get('API_HASH')
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.strip()]
 
-print(f"🔧 Конфиг загружен: API_ID={API_ID}, ADMIN_IDS={ADMIN_IDS}")
+print(f"🔧 Конфиг загружен")
 
 # ========== БД ==========
 conn = sqlite3.connect('userbot.db', check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute('''CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, msg_id INTEGER, user_id INTEGER, chat_id INTEGER, text TEXT, date TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS muted_users (user_id INTEGER PRIMARY KEY)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS muted_users (user_id INTEGER PRIMARY KEY, muted_by INTEGER)''')
 cursor.execute('''CREATE TABLE IF NOT EXISTS user_sessions (user_id INTEGER PRIMARY KEY, session_string TEXT)''')
 conn.commit()
 
 stored_messages = {}
-owner_id = None
-muted_users = set()
-
-# ========== ТВОЙ ЮЗЕРБОТ ==========
-user_client = None
+active_clients = {}
 
 # ========== БОТ ДЛЯ РЕГИСТРАЦИИ ==========
 reg_bot = Bot(token=BOT_TOKEN)
@@ -68,12 +64,14 @@ async def start_auth(message: aiogram_types.Message):
     cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
     row = cursor.fetchone()
     if row and row[0]:
-        await message.answer("✅ Твой аккаунт уже авторизован!")
+        await message.answer("✅ Твой аккаунт уже авторизован! Юзербот активен.")
+        if user_id not in active_clients:
+            asyncio.create_task(start_user_client(user_id, row[0]))
         return
     
     kb = aiogram_types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(aiogram_types.KeyboardButton("📱 Поделиться номером", request_contact=True))
-    await message.answer("🔐 Отправь свой номер телефона для входа", reply_markup=kb)
+    await message.answer("🔐 Отправь свой номер телефона для входа в твой аккаунт", reply_markup=kb)
 
 @dp.message_handler(content_types=aiogram_types.ContentType.CONTACT)
 async def get_phone(message: aiogram_types.Message):
@@ -89,15 +87,13 @@ async def get_phone(message: aiogram_types.Message):
             "phone": phone,
             "hash": result.phone_code_hash,
             "code": "",
-            "message_id": None
         }
         
-        msg = await message.answer(
+        await message.answer(
             "📱 Введи код из SMS (5 цифр):\n\nТекущий код: ` `",
             parse_mode="Markdown",
             reply_markup=get_code_keyboard()
         )
-        temp_auth[user_id]["message_id"] = msg.message_id
         
         await message.answer("Используй кнопки ниже:", reply_markup=aiogram_types.ReplyKeyboardRemove())
         
@@ -114,7 +110,7 @@ async def code_callback(callback: aiogram_types.CallbackQuery):
         return
     
     data = callback.data
-    action = data[2:]  # убираем "c_"
+    action = data[2:]
     
     current_code = temp_auth[user_id]["code"]
     
@@ -132,7 +128,6 @@ async def code_callback(callback: aiogram_types.CallbackQuery):
             await callback.answer(f"Нужно 5 цифр (сейчас {len(current_code)})", show_alert=True)
             return
     else:
-        # цифра
         if len(current_code) < 5:
             new_code = current_code + action
             temp_auth[user_id]["code"] = new_code
@@ -141,7 +136,6 @@ async def code_callback(callback: aiogram_types.CallbackQuery):
             await callback.answer("Уже 5 цифр, нажми ✅", show_alert=True)
             return
     
-    # Обновляем сообщение
     new_code = temp_auth[user_id]["code"]
     code_display = new_code if new_code else " "
     text = f"📱 Введи код из SMS (5 цифр):\n\nТекущий код: `{code_display}`\n\n{'' if len(new_code) == 5 else 'Осталось ' + str(5 - len(new_code)) + ' цифр'}"
@@ -172,14 +166,18 @@ async def complete_auth(callback, user_id: int):
                       (user_id, session_str))
         conn.commit()
         
-        await callback.message.answer("✅ Авторизация успешна!")
+        await callback.message.answer("✅ Авторизация успешна! Юзербот запущен.")
         
-        if user_id in ADMIN_IDS:
-            await callback.message.answer("✅ Ты авторизован как владелец! Юзербот запускается...")
-            asyncio.create_task(restart_userbot())
+        asyncio.create_task(start_user_client(user_id, session_str))
         
         await data["client"].disconnect()
         del temp_auth[user_id]
+        
+        for admin_id in ADMIN_IDS:
+            try:
+                await reg_bot.send_message(admin_id, f"🎉 Новый пользователь авторизован!\nID: {user_id}")
+            except:
+                pass
         
     except Exception as e:
         error_msg = str(e)
@@ -203,68 +201,80 @@ async def handle_2fa(message: aiogram_types.Message):
                       (user_id, session_str))
         conn.commit()
         
-        await message.answer("✅ Авторизация с 2FA успешна!")
+        await message.answer("✅ Авторизация с 2FA успешна! Юзербот запущен.")
         
-        if user_id in ADMIN_IDS:
-            await message.answer("✅ Ты авторизован как владелец! Юзербот запускается...")
-            asyncio.create_task(restart_userbot())
+        asyncio.create_task(start_user_client(user_id, session_str))
         
         await data["client"].disconnect()
         del temp_auth[user_id]
         
+        for admin_id in ADMIN_IDS:
+            try:
+                await reg_bot.send_message(admin_id, f"🎉 Новый пользователь авторизован с 2FA!\nID: {user_id}")
+            except:
+                pass
+        
     except Exception as e:
         await message.answer(f"❌ Ошибка 2FA: {e}")
 
-async def restart_userbot():
-    global user_client, owner_id
-    
-    if user_client:
-        await user_client.disconnect()
-    
-    await asyncio.sleep(2)
-    
-    for admin_id in ADMIN_IDS:
-        cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (admin_id,))
-        row = cursor.fetchone()
-        if row:
-            owner_id = admin_id
-            user_client = TelegramClient(StringSession(row[0]), API_ID, API_HASH)
-            await user_client.connect()
-            print(f"✅ Юзербот запущен для {owner_id}")
-            register_handlers()
-            break
+# ========== ЗАПУСК КЛИЕНТА ДЛЯ ПОЛЬЗОВАТЕЛЯ ==========
 
-# ========== ОСНОВНЫЕ ФУНКЦИИ ЮЗЕРБОТА ==========
-
-def register_handlers():
-    global user_client, owner_id, muted_users
+async def start_user_client(user_id: int, session_string: str):
+    """Запускаем отдельного юзербота для каждого пользователя"""
     
-    if not user_client:
+    if user_id in active_clients:
+        try:
+            await active_clients[user_id].disconnect()
+        except:
+            pass
+    
+    client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
+    await client.connect()
+    
+    if not await client.is_user_authorized():
+        print(f"❌ Пользователь {user_id} не авторизован")
         return
     
-    cursor.execute('SELECT user_id FROM muted_users')
+    active_clients[user_id] = client
+    print(f"✅ Юзербот запущен для пользователя {user_id}")
+    
+    # Регистрируем обработчики для этого клиента
+    await register_user_handlers(client, user_id)
+    
+    await client.run_until_disconnected()
+
+async def register_user_handlers(client: TelegramClient, owner_id: int):
+    """Регистрируем обработчики для конкретного пользователя"""
+    
+    # Загружаем его мут-лист
+    cursor.execute('SELECT user_id FROM muted_users WHERE muted_by=?', (owner_id,))
     muted_users = {row[0] for row in cursor.fetchall()}
     
-    @user_client.on(events.NewMessage(incoming=True))
+    # ========== СОХРАНЕНИЕ ВХОДЯЩИХ СООБЩЕНИЙ ==========
+    @client.on(events.NewMessage(incoming=True))
     async def incoming_handler(event):
         if not isinstance(event.message.peer_id, PeerUser):
             return
         
         sender_id = event.sender_id
         
+        # Проверка на мут
         if sender_id in muted_users:
             await event.delete()
-            print(f"🗑 Удалено сообщение от замьюченного {sender_id}")
+            print(f"🗑 {owner_id}: удалено сообщение от замьюченного {sender_id}")
             return
         
+        # Сохраняем сообщение для отслеживания удалений/изменений
         text = event.message.text or ""
         if text:
             cursor.execute('INSERT OR REPLACE INTO messages (msg_id, user_id, chat_id, text, date) VALUES (?, ?, ?, ?, ?)',
                           (event.message.id, sender_id, event.chat_id, text, datetime.now().isoformat()))
             conn.commit()
-            stored_messages[(event.chat_id, event.message.id)] = text
+            stored_messages[(owner_id, event.message.id)] = text
+            print(f"💾 {owner_id}: сохранено сообщение от {sender_id}")
     
-    @user_client.on(events.MessageDeleted)
+    # ========== ОТСЛЕЖИВАНИЕ УДАЛЕННЫХ СООБЩЕНИЙ ==========
+    @client.on(events.MessageDeleted)
     async def deleted_handler(event):
         if not isinstance(event.chat, PeerUser):
             return
@@ -272,24 +282,31 @@ def register_handlers():
         for msg_id in event.deleted_ids:
             cursor.execute('SELECT user_id, text FROM messages WHERE msg_id=?', (msg_id,))
             row = cursor.fetchone()
+            
             if row and row[0] != owner_id:
-                user_id, old_text = row
+                sender_id, old_text = row
+                
                 try:
-                    user = await user_client.get_entity(user_id)
+                    user = await client.get_entity(sender_id)
                     name = user.first_name or "Пользователь"
                     username = f" @{user.username}" if user.username else ""
                     
-                    await user_client.send_message(
+                    # Отправляем уведомление владельцу
+                    await client.send_message(
                         owner_id,
                         f"🗑 <b>{name}</b>{username} удалил сообщение:\n\n<blockquote>{old_text[:500]}</blockquote>",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                    print(f"📨 {owner_id}: отправлено уведомление об удалении от {sender_id}")
+                    
+                except Exception as e:
+                    print(f"Ошибка при отправке уведомления об удалении: {e}")
+                
                 cursor.execute('DELETE FROM messages WHERE msg_id=?', (msg_id,))
                 conn.commit()
     
-    @user_client.on(events.MessageEdited)
+    # ========== ОТСЛЕЖИВАНИЕ ИЗМЕНЕННЫХ СООБЩЕНИЙ ==========
+    @client.on(events.MessageEdited)
     async def edited_handler(event):
         if not isinstance(event.message.peer_id, PeerUser) or event.out:
             return
@@ -299,28 +316,34 @@ def register_handlers():
         row = cursor.fetchone()
         
         if row and row[0] != owner_id:
+            sender_id = row[0]
             old_text = row[1]
             new_text = event.message.text or ""
             
             if old_text != new_text and old_text and new_text:
                 try:
-                    user = await user_client.get_entity(row[0])
+                    user = await client.get_entity(sender_id)
                     name = user.first_name or "Пользователь"
                     username = f" @{user.username}" if user.username else ""
                     
-                    await user_client.send_message(
+                    # Отправляем уведомление владельцу
+                    await client.send_message(
                         owner_id,
                         f"✏️ <b>{name}</b>{username} изменил сообщение:\n\n"
                         f"<b>Было:</b>\n<blockquote>{old_text[:200]}</blockquote>\n"
                         f"<b>Стало:</b>\n<blockquote>{new_text[:200]}</blockquote>",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                    print(f"📨 {owner_id}: отправлено уведомление об изменении от {sender_id}")
+                    
+                except Exception as e:
+                    print(f"Ошибка при отправке уведомления об изменении: {e}")
+                
                 cursor.execute('UPDATE messages SET text=? WHERE msg_id=?', (new_text, msg_id))
                 conn.commit()
     
-    @user_client.on(events.NewMessage(outgoing=True))
+    # ========== КОМАНДЫ ЮЗЕРБОТА ==========
+    @client.on(events.NewMessage(outgoing=True))
     async def command_handler(event):
         if not isinstance(event.message.peer_id, PeerUser):
             return
@@ -330,8 +353,9 @@ def register_handlers():
         if not text.startswith('.'):
             return
         
-        print(f"📨 Команда: {text}")
+        print(f"📨 Команда от {owner_id}: {text}")
         
+        # .help
         if text == '.help':
             help_text = """<b>📝 Команды юзербота (только ЛС)</b>
 
@@ -343,72 +367,82 @@ def register_handlers():
 ▫️ <b>.info</b> (ответ на сообщение) - инфо о пользователе
 ▫️ <b>.type [текст]</b> - эффект печати
 ▫️ <b>.spam [кол-во] [текст]</b> - спам (макс 20)
-</blockquote>"""
+</blockquote>
+
+<i>Уведомления об удалении/изменении сообщений приходят автоматически</i>"""
             await event.edit(help_text, parse_mode='HTML')
             return
         
+        # .mute
         if text == '.mute':
             reply = await event.get_reply_message()
             if reply and reply.sender_id and reply.sender_id != owner_id:
-                user_id = reply.sender_id
-                cursor.execute('INSERT OR IGNORE INTO muted_users (user_id) VALUES (?)', (user_id,))
+                target_id = reply.sender_id
+                cursor.execute('INSERT OR IGNORE INTO muted_users (user_id, muted_by) VALUES (?, ?)', (target_id, owner_id))
                 conn.commit()
-                muted_users.add(user_id)
+                muted_users.add(target_id)
                 try:
-                    user = await user_client.get_entity(user_id)
+                    user = await client.get_entity(target_id)
                     await event.edit(f'🔕 {user.first_name} заглушен')
                 except:
-                    await event.edit(f'🔕 Пользователь {user_id} заглушен')
+                    await event.edit(f'🔕 Пользователь заглушен')
             else:
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
         
+        # .unmute
         if text == '.unmute':
             reply = await event.get_reply_message()
             if reply and reply.sender_id:
-                user_id = reply.sender_id
-                cursor.execute('DELETE FROM muted_users WHERE user_id=?', (user_id,))
+                target_id = reply.sender_id
+                cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (target_id, owner_id))
                 conn.commit()
-                muted_users.discard(user_id)
+                muted_users.discard(target_id)
                 try:
-                    user = await user_client.get_entity(user_id)
+                    user = await client.get_entity(target_id)
                     await event.edit(f'🔔 {user.first_name} разглушен')
                 except:
-                    await event.edit(f'🔔 Пользователь {user_id} разглушен')
+                    await event.edit(f'🔔 Пользователь разглушен')
             else:
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
         
+        # .list
         if text == '.list':
-            if muted_users:
+            cursor.execute('SELECT user_id FROM muted_users WHERE muted_by=?', (owner_id,))
+            my_muted = cursor.fetchall()
+            if my_muted:
                 names = []
-                for uid in list(muted_users)[:20]:
+                for (uid,) in my_muted[:20]:
                     try:
-                        user = await user_client.get_entity(uid)
+                        user = await client.get_entity(uid)
                         names.append(f"• {user.first_name} ({uid})")
                     except:
                         names.append(f"• {uid}")
-                await event.edit(f"🔕 <b>Замьюченные:</b>\n\n" + "\n".join(names), parse_mode='HTML')
+                await event.edit(f"🔕 <b>Твои замьюченные:</b>\n\n" + "\n".join(names), parse_mode='HTML')
             else:
-                await event.edit("🔕 Нет замьюченных")
+                await event.edit("🔕 У тебя нет замьюченных")
             return
         
+        # .info
         if text == '.info':
             reply = await event.get_reply_message()
             if reply and reply.sender_id:
-                user_id = reply.sender_id
+                target_id = reply.sender_id
                 try:
-                    user = await user_client.get_entity(user_id)
+                    user = await client.get_entity(target_id)
                     name = f"{user.first_name or ''} {user.last_name or ''}".strip()
                     username = f"@{user.username}" if user.username else "нет"
-                    is_muted = "✅ Да" if user_id in muted_users else "❌ Нет"
+                    
+                    cursor.execute('SELECT user_id FROM muted_users WHERE user_id=? AND muted_by=?', (target_id, owner_id))
+                    is_muted = "✅ Да" if cursor.fetchone() else "❌ Нет"
                     
                     info = f"""<b>👤 Инфо</b>
 
-<b>ID:</b> <code>{user_id}</code>
+<b>ID:</b> <code>{target_id}</code>
 <b>Имя:</b> {name}
 <b>Username:</b> {username}
-<b>Заглушен:</b> {is_muted}"""
+<b>Заглушен тобой:</b> {is_muted}"""
                     
                     await event.edit(info, parse_mode='HTML')
                 except Exception as e:
@@ -417,6 +451,7 @@ def register_handlers():
                 await event.edit('❌ Ответь на сообщение')
             return
         
+        # .type
         if text.startswith('.type '):
             typing_text = text[6:]
             if typing_text:
@@ -431,6 +466,7 @@ def register_handlers():
                     await asyncio.sleep(0.3)
             return
         
+        # .spam
         if text.startswith('.spam '):
             parts = text.split(' ', 2)
             if len(parts) >= 2:
@@ -446,7 +482,7 @@ def register_handlers():
                     if msg_text:
                         await event.delete()
                         for i in range(count):
-                            await user_client.send_message(event.chat_id, msg_text)
+                            await client.send_message(event.chat_id, msg_text)
                             await asyncio.sleep(0.3)
                 except:
                     pass
@@ -463,28 +499,17 @@ def run_web():
     flask_app.run(host='0.0.0.0', port=8080)
 
 # ========== ЗАПУСК ==========
+async def restore_all_sessions():
+    """Восстанавливаем сессии всех зарегистрированных пользователей"""
+    cursor.execute('SELECT user_id, session_string FROM user_sessions')
+    rows = cursor.fetchall()
+    
+    for user_id, session_str in rows:
+        asyncio.create_task(start_user_client(user_id, session_str))
+
 async def main():
-    global user_client, owner_id
-    
-    print("🚀 Запуск...")
-    
-    for admin_id in ADMIN_IDS:
-        cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (admin_id,))
-        row = cursor.fetchone()
-        if row:
-            owner_id = admin_id
-            user_client = TelegramClient(StringSession(row[0]), API_ID, API_HASH)
-            await user_client.connect()
-            
-            if await user_client.is_user_authorized():
-                print(f"✅ Юзербот запущен! Владелец: {owner_id}")
-                register_handlers()
-                await user_client.run_until_disconnected()
-                return
-            else:
-                print(f"❌ Сессия для {admin_id} недействительна")
-    
-    print("⚠️ Нет сессии админа. Напиши /start боту и авторизуйся")
+    print("🚀 Запуск сервера...")
+    await restore_all_sessions()
     
     while True:
         await asyncio.sleep(10)
