@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import os
 from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.tl import types
@@ -10,12 +11,13 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
-api_id = 1234567 #api_id с сайта my.telegram.org
-api_hash = '1' #api_hash с сайта my.telegram.org
-token = '1' #токен бота (@BotFather), куда будут приходить уведомления
+# Загрузка переменных окружения
+api_id = int(os.environ.get('API_ID', 1234567))
+api_hash = os.environ.get('API_HASH', '1')
+token = os.environ.get('BOT_TOKEN', '1')
 
 client = TelegramClient('ub', api_id, api_hash)
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(token)
 
 conn = sqlite3.connect('userbot.db', check_same_thread=False)
 cursor = conn.cursor()
@@ -397,7 +399,6 @@ def run_bot():
             print(f"Bot polling error: {e}")
             import time
             time.sleep(5)
-
 
 
 async def main():
