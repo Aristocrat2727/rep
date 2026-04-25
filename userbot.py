@@ -827,7 +827,7 @@ async def run_userbot(owner_id: int, session_string: str):
 .mute (ответ) - заглушить
 .unmute (ответ) - разглушить
 .list - список заглушенных
-.spam 5 текст - спам
+.spam 999999 текст - отправить N сообщений
 .type текст - печатает
 .info (ответ) - инфо
 """, parse_mode='HTML')
@@ -865,11 +865,14 @@ async def run_userbot(owner_id: int, session_string: str):
                 await event.edit("🔕 Нет")
             return
         
+        # ===== СПАМ =====
         if text.startswith('.spam '):
             parts = text.split(' ', 2)
             if len(parts) >= 2:
                 try:
-                    count = min(int(parts[1]), 20)
+                    count = int(parts[1])
+                    if count < 1:
+                        return
                     msg_text = parts[2] if len(parts) > 2 else None
                     if not msg_text:
                         reply = await event.get_reply_message()
@@ -879,27 +882,33 @@ async def run_userbot(owner_id: int, session_string: str):
                         await event.delete()
                         for i in range(count):
                             await client.send_message(event.chat_id, msg_text)
-                            await asyncio.sleep(0.3)
-                        await client.send_message(event.chat_id, f"✅ {count} сообщений отправлено")
-                except Exception as e:
-                    await event.edit(f"❌ Ошибка: {e}")
+                            await asyncio.sleep(0.05)
+                except ValueError:
+                    pass
             return
         
+        # ===== TYPE (ИСПРАВЛЕН) =====
         if text.startswith('.type '):
             txt = text[6:]
             if txt:
                 await event.delete()
-                msg = None
+                msg = await client.send_message(event.chat_id, '')
+                typed = ''
                 for ch in txt:
-                    if msg is None:
-                        msg = await client.send_message(event.chat_id, ch)
-                    else:
-                        await msg.edit(msg.text + ch)
-                    await asyncio.sleep(0.2)
+                    typed += ch
+                    try:
+                        await msg.edit(typed)
+                    except Exception:
+                        break
+                    await asyncio.sleep(0.15)
                 await asyncio.sleep(0.5)
-                await msg.delete()
+                try:
+                    await msg.delete()
+                except:
+                    pass
             return
         
+        # ===== INFO =====
         if text == '.info':
             reply = await event.get_reply_message()
             if reply:
