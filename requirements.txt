@@ -1,5 +1,4 @@
-telethon
+telethon==1.37.1
 aiogram==2.25.1
-flask
-nest-asyncio
-pyTelegramBotAPI
+flask==2.3.3
+nest-asyncio==1.6.0
