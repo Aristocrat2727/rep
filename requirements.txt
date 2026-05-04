@@ -1,4 +1,4 @@
-telethon==1.37.1
+telethon
 aiogram==2.25.1
-flask==2.3.3
-nest-asyncio==1.6.0
+flask
+nest-asyncio
