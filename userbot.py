@@ -1093,7 +1093,7 @@ async def run_userbot(owner_id, session_string):
         
         if text == '.help':
             await event.edit("""
-<b>🤖 КОМАНДЫ ЮЗЕРБОТА</b>
+<b>🤖 КОМАНДЫ SAVEMOD</b>
 
 .help - справка
 .mute (ответ) - заглушить
