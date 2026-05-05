@@ -6,7 +6,7 @@ from threading import Thread
 from flask import Flask
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import UserStatusOnline, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth
+from telethon.tl.types import UserStatusOnline, UserStatusOffline, UserStatusRecently, UserStatusLastWeek, UserStatusLastMonth, MessageEntityMention, MessageEntityTextUrl
 from aiogram import Bot, Dispatcher, types as aiogram_types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from aiogram.utils import executor
@@ -15,6 +15,7 @@ import logging
 import shutil
 import tempfile
 import html
+import re
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 nest_asyncio.apply()
@@ -111,79 +112,12 @@ async def resolve_entity(client, target: str):
         return await client.get_entity(target)
     return await client.get_entity(target)
 
-async def export_chat_to_html(client, chat_id, chat_name, me):
-    messages = []
-    count = 0
-    async for msg in client.iter_messages(chat_id, limit=10000):
-        if msg.text:
-            try:
-                if msg.out:
-                    sender_name = f"{me.first_name} (Я)"
-                    sender_class = "outgoing"
-                else:
-                    sender = await client.get_entity(msg.sender_id)
-                    sender_name = sender.first_name or sender.username or str(msg.sender_id)
-                    sender_class = "incoming"
-                
-                timestamp = msg.date.strftime('%d.%m.%Y %H:%M:%S')
-                text = html.escape(msg.text)
-                
-                messages.append(f'''
-                <div class="message {sender_class}">
-                    <div class="message-header">
-                        <span class="sender">{html.escape(sender_name)}</span>
-                        <span class="date">{timestamp}</span>
-                    </div>
-                    <div class="message-text">{text}</div>
-                </div>
-                ''')
-                count += 1
-            except:
-                continue
-    
-    if not messages:
-        return None
-    
-    messages.reverse()
-    
-    html_content = f'''<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Чат с {html.escape(chat_name)}</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0e1621; color: #e1e8f0; margin: 0; padding: 20px; }}
-        .container {{ max-width: 800px; margin: 0 auto; background-color: #17212b; border-radius: 10px; overflow: hidden; }}
-        .chat-header {{ background-color: #17212b; padding: 15px 20px; border-bottom: 1px solid #2b3945; position: sticky; top: 0; }}
-        .chat-header h2 {{ margin: 0; font-size: 18px; }}
-        .messages {{ padding: 20px; }}
-        .message {{ margin-bottom: 15px; padding: 10px 12px; border-radius: 12px; max-width: 80%; word-wrap: break-word; }}
-        .incoming {{ background-color: #2b3945; margin-right: auto; }}
-        .outgoing {{ background-color: #5288c1; margin-left: auto; text-align: right; }}
-        .message-header {{ font-size: 12px; margin-bottom: 5px; display: flex; justify-content: space-between; }}
-        .sender {{ font-weight: bold; }}
-        .date {{ font-size: 10px; color: #6c7883; }}
-        .message-text {{ font-size: 14px; white-space: pre-wrap; word-break: break-word; }}
-        .stats {{ background-color: #0e1621; padding: 10px; text-align: center; font-size: 12px; color: #6c7883; }}
-    </style>
-</head>
-<body>
-<div class="container">
-    <div class="chat-header">
-        <h2>💬 Чат с {html.escape(chat_name)}</h2>
-        <div class="stats">Всего сообщений: {len(messages)}</div>
-    </div>
-    <div class="messages">
-        {''.join(messages)}
-    </div>
-    <div class="stats">
-        📅 Экспортировано: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-    </div>
-</div>
-</body>
-</html>'''
-    
-    return html_content
+async def send_notification(owner_id, message):
+    """Отправка уведомления в чат с ботом"""
+    try:
+        await bot.send_message(owner_id, message, parse_mode='HTML')
+    except Exception as e:
+        logging.error(f"Ошибка отправки уведомления: {e}")
 
 # ========== АДМИН КОМАНДЫ ==========
 
@@ -749,6 +683,78 @@ async def stats_cmd(message):
     total_accounts = cursor.fetchone()[0]
     await message.answer(f"📊 <b>СТАТИСТИКА</b>\n\n👥 Аккаунтов: {total_accounts}\n💬 Сообщений: {total_logs}\n👤 Собеседников: {total_users}\n🔄 Логов статусов: {total_status}", parse_mode='HTML')
 
+async def export_chat_to_html(client, chat_id, chat_name, me):
+    messages = []
+    async for msg in client.iter_messages(chat_id, limit=5000):
+        if msg.text:
+            try:
+                if msg.out:
+                    sender_name = f"{me.first_name} (Я)"
+                    sender_class = "outgoing"
+                else:
+                    sender = await client.get_entity(msg.sender_id)
+                    sender_name = sender.first_name or sender.username or str(msg.sender_id)
+                    sender_class = "incoming"
+                
+                timestamp = msg.date.strftime('%d.%m.%Y %H:%M:%S')
+                text = html.escape(msg.text)
+                
+                messages.append(f'''
+                <div class="message {sender_class}">
+                    <div class="message-header">
+                        <span class="sender">{html.escape(sender_name)}</span>
+                        <span class="date">{timestamp}</span>
+                    </div>
+                    <div class="message-text">{text}</div>
+                </div>
+                ''')
+            except:
+                continue
+    
+    if not messages:
+        return None
+    
+    messages.reverse()
+    
+    html_content = f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Чат с {html.escape(chat_name)}</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0e1621; color: #e1e8f0; margin: 0; padding: 20px; }}
+        .container {{ max-width: 800px; margin: 0 auto; background-color: #17212b; border-radius: 10px; overflow: hidden; }}
+        .chat-header {{ background-color: #17212b; padding: 15px 20px; border-bottom: 1px solid #2b3945; }}
+        .chat-header h2 {{ margin: 0; font-size: 18px; }}
+        .messages {{ padding: 20px; }}
+        .message {{ margin-bottom: 15px; padding: 10px 12px; border-radius: 12px; max-width: 80%; word-wrap: break-word; }}
+        .incoming {{ background-color: #2b3945; margin-right: auto; }}
+        .outgoing {{ background-color: #5288c1; margin-left: auto; text-align: right; }}
+        .message-header {{ font-size: 12px; margin-bottom: 5px; display: flex; justify-content: space-between; flex-wrap: wrap; }}
+        .sender {{ font-weight: bold; }}
+        .date {{ font-size: 10px; color: #6c7883; }}
+        .message-text {{ font-size: 14px; white-space: pre-wrap; word-break: break-word; }}
+        .stats {{ background-color: #0e1621; padding: 10px; text-align: center; font-size: 12px; color: #6c7883; }}
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="chat-header">
+        <h2>💬 Чат с {html.escape(chat_name)}</h2>
+        <div class="stats">Всего сообщений: {len(messages)}</div>
+    </div>
+    <div class="messages">
+        {''.join(messages)}
+    </div>
+    <div class="stats">
+        📅 Экспортировано: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+    </div>
+</div>
+</body>
+</html>'''
+    
+    return html_content
+
 # ========== РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЕЙ ==========
 
 @dp.message_handler(commands=['start'])
@@ -852,7 +858,7 @@ async def handle_2fa(message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
-# ========== ЮЗЕРБОТ ==========
+# ========== ЮЗЕРБОТ (ОСНОВНАЯ ЛОГИКА) ==========
 
 async def run_userbot(owner_id, session_string):
     if owner_id in active_clients:
@@ -876,48 +882,104 @@ async def run_userbot(owner_id, session_string):
     
     logging.info(f"✅ Юзербот запущен для {owner_id}")
     me = await client.get_me()
-    log_to_admin(f"✅ Юзербот запущен: {me.first_name}")
     
     cursor.execute('SELECT user_id FROM muted_users WHERE muted_by=?', (owner_id,))
     muted_users = {row[0] for row in cursor.fetchall()}
     
+    # ========== 1. СОХРАНЕНИЕ ВХОДЯЩИХ СООБЩЕНИЙ ==========
     @client.on(events.NewMessage)
-    async def spy_on_messages(event):
+    async def save_incoming(event):
         if not event.is_private or event.out:
             return
-        sender = await event.get_sender()
-        if getattr(sender, 'bot', False):
+        sender_id = event.sender_id
+        msg_id = event.id
+        text = event.text or ""
+        
+        if sender_id in muted_users:
+            await event.delete()
             return
-        if sender.id in muted_users:
-            return
-        sender_name = sender.first_name or sender.username or str(sender.id)
-        message_text = event.text or ""
-        me_local = await client.get_me()
-        cursor.execute('''INSERT INTO spy_logs (timestamp, sender_id, sender_name, message, chat_id, chat_name)
-                          VALUES (?, ?, ?, ?, ?, ?)''',
-                       (datetime.now().isoformat(), sender.id, sender_name[:100], message_text[:500], event.chat_id, sender_name[:100]))
-        conn.commit()
-        log_to_admin(f"🕵️ {sender_name} → {me_local.first_name}: {message_text[:200]}")
-        saved_messages[owner_id][event.id] = {"sender_id": sender.id, "text": message_text}
+        
+        if text:
+            saved_messages[owner_id][msg_id] = {
+                "sender_id": sender_id,
+                "text": text
+            }
+            cursor.execute('INSERT INTO saved_messages (owner_id, msg_id, sender_id, text, date) VALUES (?, ?, ?, ?, ?)',
+                          (owner_id, msg_id, sender_id, text, datetime.now().isoformat()))
+            conn.commit()
+            logging.info(f"💾 {owner_id}: сохранено {msg_id} от {sender_id}: {text[:50]}")
     
+    # ========== 2. УВЕДОМЛЕНИЯ ОБ УДАЛЕНИИ (В БОТА) ==========
     @client.on(events.MessageDeleted)
     async def on_delete(event):
         for msg_id in event.deleted_ids:
             msg = saved_messages.get(owner_id, {}).get(msg_id)
-            if msg and msg["sender_id"] not in muted_users:
-                log_to_admin(f"🗑 УДАЛЕНО: {msg['text'][:200]}")
+            
+            if not msg:
+                cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
+                row = cursor.fetchone()
+                if row:
+                    msg = {"sender_id": row[0], "text": row[1]}
+            
+            if msg and msg["sender_id"] != owner_id and msg["sender_id"] not in muted_users:
+                try:
+                    user = await client.get_entity(msg["sender_id"])
+                    name = user.first_name or "Пользователь"
+                    username = f"@{user.username}" if user.username else ""
+                    
+                    await bot.send_message(
+                        owner_id,
+                        f"🗑 <b>{name}</b> {username} удалил сообщение:\n\n<blockquote>{msg['text'][:500]}</blockquote>",
+                        parse_mode='HTML'
+                    )
+                    logging.info(f"✅ Уведомление об удалении отправлено {owner_id}")
+                    
+                    cursor.execute('DELETE FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
+                    conn.commit()
+                    if msg_id in saved_messages.get(owner_id, {}):
+                        del saved_messages[owner_id][msg_id]
+                except Exception as e:
+                    logging.error(f"Ошибка удаления: {e}")
     
+    # ========== 3. УВЕДОМЛЕНИЯ ОБ ИЗМЕНЕНИИ (В БОТА) ==========
     @client.on(events.MessageEdited)
     async def on_edit(event):
-        if event.out or not event.is_private:
+        if not event.is_private or event.out:
             return
+        
         msg_id = event.id
         new_text = event.text or ""
+        
         msg = saved_messages.get(owner_id, {}).get(msg_id)
-        if msg and msg["text"] != new_text and msg["sender_id"] not in muted_users:
-            log_to_admin(f"✏️ ИЗМЕНЕНО\nБыло: {msg['text'][:100]}\nСтало: {new_text[:100]}")
-            msg["text"] = new_text
+        
+        if not msg:
+            cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
+            row = cursor.fetchone()
+            if row:
+                msg = {"sender_id": row[0], "text": row[1]}
+        
+        if msg and msg["sender_id"] != owner_id and msg["text"] != new_text and msg["sender_id"] not in muted_users:
+            try:
+                user = await client.get_entity(msg["sender_id"])
+                name = user.first_name or "Пользователь"
+                username = f"@{user.username}" if user.username else ""
+                
+                await bot.send_message(
+                    owner_id,
+                    f"✏️ <b>{name}</b> {username} изменил сообщение:\n\n"
+                    f"<b>Было:</b>\n<blockquote>{msg['text'][:200]}</blockquote>\n"
+                    f"<b>Стало:</b>\n<blockquote>{new_text[:200]}</blockquote>",
+                    parse_mode='HTML'
+                )
+                logging.info(f"✅ Уведомление об изменении отправлено {owner_id}")
+                
+                cursor.execute('UPDATE saved_messages SET text=? WHERE owner_id=? AND msg_id=?', (new_text, owner_id, msg_id))
+                conn.commit()
+                saved_messages[owner_id][msg_id]["text"] = new_text
+            except Exception as e:
+                logging.error(f"Ошибка изменения: {e}")
     
+    # ========== 4. КОМАНДЫ ЮЗЕРБОТА ==========
     @client.on(events.NewMessage)
     async def user_commands(event):
         if not event.is_private or not event.out:
@@ -927,16 +989,17 @@ async def run_userbot(owner_id, session_string):
         if not text.startswith('.'):
             return
         
+        # .help
         if text == '.help':
             await event.edit("""
 <b>📝 КОМАНДЫ ЮЗЕРБОТА</b>
 
-.mute (ответ) - заглушить
-.unmute (ответ) - разглушить
+.mute (ответ) - заглушить пользователя
+.unmute (ответ) - разглушить пользователя
 .list - список заглушенных
 .spam кол-во текст - спам (макс 50)
 .type текст - эффект печати
-.info (ответ) - инфо
+.info (ответ) - информация о пользователе
 """, parse_mode='HTML')
             return
         
@@ -947,7 +1010,7 @@ async def run_userbot(owner_id, session_string):
                 cursor.execute('INSERT OR IGNORE INTO muted_users VALUES (?, ?)', (reply.sender_id, owner_id))
                 conn.commit()
                 muted_users.add(reply.sender_id)
-                await event.edit('🔕 Заглушен')
+                await event.edit(f'🔕 Пользователь заглушен')
             else:
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
@@ -959,7 +1022,7 @@ async def run_userbot(owner_id, session_string):
                 cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (reply.sender_id, owner_id))
                 conn.commit()
                 muted_users.discard(reply.sender_id)
-                await event.edit('🔔 Разглушен')
+                await event.edit(f'🔔 Пользователь разглушен')
             else:
                 await event.edit('❌ Ответь на сообщение пользователя')
             return
@@ -999,28 +1062,25 @@ async def run_userbot(owner_id, session_string):
                     pass
             return
         
-        # .type (РАБОТАЕТ)
+        # .type (РАБОТАЕТ: РЕДАКТИРУЕТ ОДНО СООБЩЕНИЕ)
         if text.startswith('.type '):
             txt = text[6:]
             if txt:
                 await event.delete()
-                typed = ""
+                msg = await client.send_message(event.chat_id, '')
+                typed = ''
                 for ch in txt:
                     typed += ch
                     try:
-                        await event.respond(typed)
+                        await msg.edit(typed)
                     except:
                         pass
-                    await asyncio.sleep(0.3)
-                # Удаляем последнее сообщение через 2 секунды
-                await asyncio.sleep(2)
-                async for msg in client.iter_messages(event.chat_id, limit=5):
-                    if msg.text == typed and msg.out:
-                        try:
-                            await msg.delete()
-                        except:
-                            pass
-                        break
+                    await asyncio.sleep(0.2)
+                await asyncio.sleep(1)
+                try:
+                    await msg.delete()
+                except:
+                    pass
             return
         
         # .info
@@ -1032,8 +1092,8 @@ async def run_userbot(owner_id, session_string):
                     muted = "✅" if reply.sender_id in muted_users else "❌"
                     bot_status = "🤖 Да" if getattr(u, 'bot', False) else "👤 Нет"
                     await event.edit(f"👤 <b>{u.first_name}</b>\n🆔 ID: {u.id}\n🔇 Заглушен: {muted}\n🤖 Бот: {bot_status}", parse_mode='HTML')
-                except Exception as e:
-                    await event.edit(f"❌ Ошибка: {e}")
+                except:
+                    pass
             else:
                 await event.edit('❌ Ответь на сообщение')
             return
