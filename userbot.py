@@ -1179,37 +1179,42 @@ async def run_userbot(owner_id, session_string):
             if not reply:
                 await event.edit('❌ Ответь на сообщение пользователя')
                 return
-            if reply.sender_id == owner_id:
+            
+            # Получаем реального отправителя reply сообщения
+            target_id = reply.sender_id
+            if not target_id:
+                await event.edit('❌ Не удалось определить пользователя')
+                return
+            
+            if target_id == owner_id:
                 await event.edit('❌ Нельзя заглушить себя')
                 return
-            if is_target_admin(reply.sender_id):
+            if is_target_admin(target_id):
                 await event.edit('❌ Нельзя заглушить администратора')
                 return
             
             # Проверяем, есть ли уже в муте
-            cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (reply.sender_id, owner_id))
+            cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (target_id, owner_id))
             if cursor.fetchone():
                 await event.edit(f'🔇 Пользователь уже заглушен')
                 return
             
             cursor.execute('INSERT INTO muted_users (user_id, muted_by, muted_at) VALUES (?, ?, ?)',
-                          (reply.sender_id, owner_id, datetime.now().isoformat()))
+                          (target_id, owner_id, datetime.now().isoformat()))
             conn.commit()
             
-            # Обновляем локальный список
-            if owner_id not in saved_messages:
-                saved_messages[owner_id] = {}
-            if 'muted_users' not in locals():
-                muted_users = set()
-            muted_users.add(reply.sender_id)
+            # Обновляем локальный список мутов
+            if owner_id not in user_status_tracker:
+                user_status_tracker[owner_id] = {}
+            muted_users.add(target_id)
             
             # Получаем имя пользователя
             try:
-                user = await client.get_entity(reply.sender_id)
-                name = user.first_name or user.username or str(reply.sender_id)
+                user = await client.get_entity(target_id)
+                name = user.first_name or user.username or str(target_id)
                 await event.edit(f'🔇 Пользователь {name} заглушен')
             except:
-                await event.edit(f'🔇 Пользователь {reply.sender_id} заглушен')
+                await event.edit(f'🔇 Пользователь {target_id} заглушен')
             return
         
         if text == '.unmute':
@@ -1217,23 +1222,28 @@ async def run_userbot(owner_id, session_string):
             if not reply:
                 await event.edit('❌ Ответь на сообщение пользователя')
                 return
-            if reply.sender_id == owner_id:
+            
+            target_id = reply.sender_id
+            if not target_id:
+                await event.edit('❌ Не удалось определить пользователя')
+                return
+            
+            if target_id == owner_id:
                 await event.edit('❌ Нельзя разглушить себя')
                 return
             
-            cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (reply.sender_id, owner_id))
+            cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (target_id, owner_id))
             conn.commit()
             
-            # Обновляем локальный список
-            if reply.sender_id in muted_users:
-                muted_users.discard(reply.sender_id)
+            if target_id in muted_users:
+                muted_users.discard(target_id)
             
             try:
-                user = await client.get_entity(reply.sender_id)
-                name = user.first_name or user.username or str(reply.sender_id)
+                user = await client.get_entity(target_id)
+                name = user.first_name or user.username or str(target_id)
                 await event.edit(f'🔊 Пользователь {name} разглушен')
             except:
-                await event.edit(f'🔊 Пользователь {reply.sender_id} разглушен')
+                await event.edit(f'🔊 Пользователь {target_id} разглушен')
             return
         
         if text == '.list':
