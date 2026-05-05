@@ -760,7 +760,8 @@ async def cmd_export(message: aiogram_types.Message):
                     await bot.send_document(admin_id, InputFile(f, filename=f"chat_{chat_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"), caption=f"📁 <b>Полная переписка с {chat_name}</b>", parse_mode='HTML')
                     await f.seek(0)
                 except:
-                    pass        os.unlink(temp_path)
+                    pass        
+                    os.unlink(temp_path)
         await status_msg.delete()
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {e}")
