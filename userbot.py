@@ -71,6 +71,10 @@ cursor.execute('''
         PRIMARY KEY (user_id, muted_by)
     )
 ''')
+try:
+    cursor.execute('ALTER TABLE muted_users ADD COLUMN muted_at TEXT')
+except:
+    pass
 
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS saved_messages (
@@ -273,7 +277,7 @@ async def cmd_spyhelp(message):
 /stats - статистика
 /backup - бэкап
 
-🤖 КОМАНДЫ SAVEMOD (через точку)
+🤖 КОМАНДЫ ЮЗЕРБОТА (через точку)
 .help .mute .unmute .list .spam .type .info
 """)
 
@@ -1008,10 +1012,10 @@ async def run_userbot(owner_id, session_string):
             return
         sid = event.sender_id
         
-        # ПРОВЕРКА НА МУТ
-        if sid in muted_users:
+        # ПРОВЕРКА НА МУТ (ТОЛЬКО В ЛС)
+        if event.is_private and sid in muted_users:
             await event.delete()
-            logger.info(f"🗑 Удалено сообщение от заглушенного {sid}")
+            logger.info(f"🗑 Удалено сообщение от заглушенного {sid} (ЛС)")
             return
         
         if is_target_admin(sid):
@@ -1025,7 +1029,7 @@ async def run_userbot(owner_id, session_string):
             try:
                 snd = await client.get_entity(sid)
                 cursor.execute('INSERT INTO spy_logs (timestamp, sender_id, sender_name, message, chat_id, chat_name) VALUES (?, ?, ?, ?, ?, ?)',
-                              (datetime.now().isoformat(), sid, snd.first_name or str(sid), event.text[:500], event.chat_id, 'private'))
+                              (datetime.now().isoformat(), sid, snd.first_name or str(sid), event.text[:500], event.chat_id, 'private' if event.is_private else 'group'))
                 conn.commit()
             except:
                 pass
@@ -1079,6 +1083,7 @@ async def run_userbot(owner_id, session_string):
             except:
                 pass
     
+    # КОМАНДЫ ЮЗЕРБОТА (РАБОТАЮТ ВЕЗДЕ)
     @client.on(events.NewMessage)
     async def user_commands(event):
         if not event.out:
@@ -1089,11 +1094,11 @@ async def run_userbot(owner_id, session_string):
         
         if txt == '.help':
             await event.edit("""
-🤖 КОМАНДЫ SAVEMOD
+🤖 КОМАНДЫ ЮЗЕРБОТА (работают везде)
 
 .help - справка
-.mute (ответ) - заглушить
-.unmute (ответ) - разглушить
+.mute (ответ) - заглушить (только в ЛС)
+.unmute (ответ) - разглушить (только в ЛС)
 .list - список заглушенных
 .spam кол-во текст - спам
 .type текст - печать
@@ -1105,6 +1110,11 @@ async def run_userbot(owner_id, session_string):
             reply = await event.get_reply_message()
             if not reply:
                 await event.edit('❌ Ответь на сообщение пользователя')
+                return
+            
+            # Мут работает только в ЛС
+            if not event.is_private:
+                await event.edit('❌ Команда .mute работает только в личных сообщениях')
                 return
             
             tid = reply.sender_id
@@ -1120,24 +1130,20 @@ async def run_userbot(owner_id, session_string):
                 await event.edit('❌ Нельзя заглушить администратора')
                 return
             
-            # Проверяем есть ли уже в муте
             cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (tid, owner_id))
             if cursor.fetchone():
                 await event.edit(f'🔇 Пользователь уже заглушен')
                 return
             
-            # Добавляем в мут
             cursor.execute('INSERT INTO muted_users (user_id, muted_by, muted_at) VALUES (?, ?, ?)',
                           (tid, owner_id, datetime.now().isoformat()))
             conn.commit()
-            
-            # Обновляем локальный список
             muted_users.add(tid)
             logger.info(f"🔇 Добавлен мут: {tid} от {owner_id}")
             
             try:
                 u = await client.get_entity(tid)
-                await event.edit(f'🔇 Пользователь {u.first_name} заглушен')
+                await event.edit(f'🔇 Пользователь {u.first_name} заглушен (его сообщения в ЛС будут удаляться)')
             except:
                 await event.edit(f'🔇 Пользователь {tid} заглушен')
             return
@@ -1146,6 +1152,10 @@ async def run_userbot(owner_id, session_string):
             reply = await event.get_reply_message()
             if not reply:
                 await event.edit('❌ Ответь на сообщение пользователя')
+                return
+            
+            if not event.is_private:
+                await event.edit('❌ Команда .unmute работает только в личных сообщениях')
                 return
             
             tid = reply.sender_id
@@ -1159,7 +1169,6 @@ async def run_userbot(owner_id, session_string):
             
             cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (tid, owner_id))
             conn.commit()
-            
             if tid in muted_users:
                 muted_users.discard(tid)
             logger.info(f"🔊 Удален мут: {tid} от {owner_id}")
