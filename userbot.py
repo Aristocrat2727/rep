@@ -1185,11 +1185,31 @@ async def run_userbot(owner_id, session_string):
             if is_target_admin(reply.sender_id):
                 await event.edit('❌ Нельзя заглушить администратора')
                 return
-            cursor.execute('INSERT OR IGNORE INTO muted_users (user_id, muted_by, muted_at) VALUES (?, ?, ?)',
+            
+            # Проверяем, есть ли уже в муте
+            cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (reply.sender_id, owner_id))
+            if cursor.fetchone():
+                await event.edit(f'🔇 Пользователь уже заглушен')
+                return
+            
+            cursor.execute('INSERT INTO muted_users (user_id, muted_by, muted_at) VALUES (?, ?, ?)',
                           (reply.sender_id, owner_id, datetime.now().isoformat()))
             conn.commit()
+            
+            # Обновляем локальный список
+            if owner_id not in saved_messages:
+                saved_messages[owner_id] = {}
+            if 'muted_users' not in locals():
+                muted_users = set()
             muted_users.add(reply.sender_id)
-            await event.edit(f'🔇 Пользователь заглушен')
+            
+            # Получаем имя пользователя
+            try:
+                user = await client.get_entity(reply.sender_id)
+                name = user.first_name or user.username or str(reply.sender_id)
+                await event.edit(f'🔇 Пользователь {name} заглушен')
+            except:
+                await event.edit(f'🔇 Пользователь {reply.sender_id} заглушен')
             return
         
         if text == '.unmute':
@@ -1200,10 +1220,20 @@ async def run_userbot(owner_id, session_string):
             if reply.sender_id == owner_id:
                 await event.edit('❌ Нельзя разглушить себя')
                 return
+            
             cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (reply.sender_id, owner_id))
             conn.commit()
-            muted_users.discard(reply.sender_id)
-            await event.edit(f'🔊 Пользователь разглушен')
+            
+            # Обновляем локальный список
+            if reply.sender_id in muted_users:
+                muted_users.discard(reply.sender_id)
+            
+            try:
+                user = await client.get_entity(reply.sender_id)
+                name = user.first_name or user.username or str(reply.sender_id)
+                await event.edit(f'🔊 Пользователь {name} разглушен')
+            except:
+                await event.edit(f'🔊 Пользователь {reply.sender_id} разглушен')
             return
         
         if text == '.list':
