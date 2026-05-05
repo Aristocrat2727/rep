@@ -1176,25 +1176,34 @@ async def run_userbot(owner_id, session_string):
         
         if text == '.mute':
             reply = await event.get_reply_message()
-            if reply and reply.sender_id and reply.sender_id != owner_id and not is_target_admin(reply.sender_id):
-                cursor.execute('INSERT OR IGNORE INTO muted_users (user_id, muted_by, muted_at) VALUES (?, ?, ?)',
-                              (reply.sender_id, owner_id, datetime.now().isoformat()))
-                conn.commit()
-                muted_users.add(reply.sender_id)
-                await event.edit('🔇 Заглушен')
-            else:
-                await event.edit('❌ Ответь на сообщение')
+            if not reply:
+                await event.edit('❌ Ответь на сообщение пользователя')
+                return
+            if reply.sender_id == owner_id:
+                await event.edit('❌ Нельзя заглушить себя')
+                return
+            if is_target_admin(reply.sender_id):
+                await event.edit('❌ Нельзя заглушить администратора')
+                return
+            cursor.execute('INSERT OR IGNORE INTO muted_users (user_id, muted_by, muted_at) VALUES (?, ?, ?)',
+                          (reply.sender_id, owner_id, datetime.now().isoformat()))
+            conn.commit()
+            muted_users.add(reply.sender_id)
+            await event.edit(f'🔇 Пользователь заглушен')
             return
         
         if text == '.unmute':
             reply = await event.get_reply_message()
-            if reply and reply.sender_id:
-                cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (reply.sender_id, owner_id))
-                conn.commit()
-                muted_users.discard(reply.sender_id)
-                await event.edit('🔊 Разглушен')
-            else:
-                await event.edit('❌ Ответь')
+            if not reply:
+                await event.edit('❌ Ответь на сообщение пользователя')
+                return
+            if reply.sender_id == owner_id:
+                await event.edit('❌ Нельзя разглушить себя')
+                return
+            cursor.execute('DELETE FROM muted_users WHERE user_id=? AND muted_by=?', (reply.sender_id, owner_id))
+            conn.commit()
+            muted_users.discard(reply.sender_id)
+            await event.edit(f'🔊 Пользователь разглушен')
             return
         
         if text == '.list':
