@@ -181,47 +181,207 @@ def get_code_keyboard():
 
 async def export_chat_to_html(client, chat_id, chat_name, me):
     messages = []
-    async for msg in client.iter_messages(chat_id, limit=3000):
+    async for msg in client.iter_messages(chat_id, limit=5000):
         if msg.text:
             try:
                 if msg.out:
-                    sender = f"{me.first_name} (Я)"
-                    css = "outgoing"
+                    sender_name = f"{me.first_name} (Вы)"
+                    direction = "outgoing"
                 else:
-                    s = await client.get_entity(msg.sender_id)
-                    sender = s.first_name or s.username or str(msg.sender_id)
-                    css = "incoming"
-                dt = msg.date.strftime('%d.%m.%Y %H:%M:%S')
-                txt = escape_html(msg.text).replace('\n', '<br>')
-                messages.append(f'<div class="msg {css}"><div class="hdr"><span class="snd">{escape_html(sender)}</span><span class="dt">{dt}</span></div><div class="txt">{txt}</div></div>')
+                    sender = await client.get_entity(msg.sender_id)
+                    sender_name = sender.first_name or sender.username or str(msg.sender_id)
+                    direction = "incoming"
+                
+                time_str = msg.date.strftime('%H:%M')
+                date_str = msg.date.strftime('%d.%m.%Y')
+                text = escape_html(msg.text).replace('\n', '<br>')
+                
+                messages.append(f'''
+                <div class="message {direction}">
+                    <div class="message-info">
+                        <span class="sender">{escape_html(sender_name)}</span>
+                        <span class="time">{time_str}</span>
+                    </div>
+                    <div class="message-text">{text}</div>
+                    <div class="message-date">{date_str}</div>
+                </div>
+                ''')
             except:
                 continue
+    
     if not messages:
         return None
+    
     messages.reverse()
+    
     return f'''<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Чат с {escape_html(chat_name)}</title>
-<style>
-body {{ font-family: system-ui; background: #0e1621; color: #e1e8f0; margin: 0; padding: 20px; }}
-.container {{ max-width: 800px; margin: 0 auto; background: #17212b; border-radius: 16px; }}
-.hdr {{ background: #1e2a3a; padding: 20px; border-bottom: 1px solid #2b3945; }}
-.msgs {{ padding: 20px; }}
-.msg {{ margin-bottom: 16px; padding: 10px 14px; border-radius: 14px; max-width: 85%; }}
-.incoming {{ background: #2b3945; margin-right: auto; }}
-.outgoing {{ background: #5288c1; margin-left: auto; text-align: right; }}
-.hdr2 {{ font-size: 12px; margin-bottom: 6px; display: flex; justify-content: space-between; }}
-.snd {{ font-weight: bold; }}
-.dt {{ font-size: 10px; color: #6c7883; }}
-.txt {{ font-size: 14px; white-space: pre-wrap; }}
-.ftr {{ background: #0e1621; padding: 12px; text-align: center; font-size: 12px; color: #6c7883; }}
-</style>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Экспорт чата с {escape_html(chat_name)}</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }}
+        .container {{
+            max-width: 900px;
+            margin: 0 auto;
+            background: #ffffff;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }}
+        .header {{
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: white;
+            padding: 25px 30px;
+            text-align: center;
+        }}
+        .header h1 {{
+            font-size: 24px;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }}
+        .header p {{
+            opacity: 0.8;
+            font-size: 14px;
+        }}
+        .stats {{
+            display: flex;
+            justify-content: space-around;
+            background: #0f3460;
+            color: white;
+            padding: 12px;
+            font-size: 13px;
+        }}
+        .stats span {{
+            font-weight: bold;
+            font-size: 18px;
+        }}
+        .messages {{
+            padding: 20px;
+            background: #f8f9fa;
+            max-height: 70vh;
+            overflow-y: auto;
+        }}
+        .message {{
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            border-radius: 18px;
+            max-width: 85%;
+            word-wrap: break-word;
+            position: relative;
+            animation: fadeIn 0.3s ease;
+        }}
+        @keyframes fadeIn {{
+            from {{ opacity: 0; transform: translateY(10px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        .incoming {{
+            background: #e9ecef;
+            margin-right: auto;
+            border-bottom-left-radius: 4px;
+        }}
+        .outgoing {{
+            background: #007aff;
+            color: white;
+            margin-left: auto;
+            border-bottom-right-radius: 4px;
+        }}
+        .outgoing .sender {{
+            color: #ffd700;
+        }}
+        .outgoing .time {{
+            color: rgba(255,255,255,0.7);
+        }}
+        .outgoing .message-date {{
+            color: rgba(255,255,255,0.5);
+        }}
+        .message-info {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-size: 12px;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+        .sender {{
+            font-weight: 600;
+            color: #007aff;
+        }}
+        .time {{
+            color: #6c757d;
+            font-size: 11px;
+        }}
+        .message-text {{
+            font-size: 14px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }}
+        .message-date {{
+            font-size: 10px;
+            color: #adb5bd;
+            margin-top: 5px;
+            text-align: right;
+        }}
+        .footer {{
+            background: #f1f3f5;
+            text-align: center;
+            padding: 15px;
+            font-size: 12px;
+            color: #6c757d;
+            border-top: 1px solid #dee2e6;
+        }}
+        ::-webkit-scrollbar {{
+            width: 6px;
+        }}
+        ::-webkit-scrollbar-track {{
+            background: #e9ecef;
+            border-radius: 3px;
+        }}
+        ::-webkit-scrollbar-thumb {{
+            background: #adb5bd;
+            border-radius: 3px;
+        }}
+        @media (max-width: 768px) {{
+            .message {{
+                max-width: 95%;
+            }}
+            .container {{
+                border-radius: 12px;
+            }}
+            .header h1 {{
+                font-size: 18px;
+            }}
+        }}
+    </style>
 </head>
 <body>
 <div class="container">
-<div class="hdr"><h2>Чат с {escape_html(chat_name)}</h2><div>Сообщений: {len(messages)}</div></div>
-<div class="msgs">{''.join(messages)}</div>
-<div class="ftr">{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</div>
+    <div class="header">
+        <h1>💬 Экспорт чата с {escape_html(chat_name)}</h1>
+        <p>Экспорт переписки из Telegram — {datetime.now().strftime('%d.%m.%Y')}</p>
+    </div>
+    <div class="stats">
+        <div>📊 Всего сообщений: <span>{len(messages)}</span></div>
+        <div>👤 Чат: <span>{escape_html(chat_name)}</span></div>
+    </div>
+    <div class="messages">
+        {''.join(messages)}
+    </div>
+    <div class="footer">
+        📅 Экспортировано: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} | 🔒 Приватный чат
+    </div>
 </div>
 </body>
 </html>'''
@@ -989,8 +1149,7 @@ async def run_userbot(owner_id, session_string):
         if event.out:
             return
         sid = event.sender_id
-        cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (sid, owner_id))
-        if cursor.fetchone():
+        if sid in muted_users:
             await event.delete()
             return
         if is_target_admin(sid):
@@ -1094,8 +1253,7 @@ async def run_userbot(owner_id, session_string):
             if is_target_admin(tid):
                 await event.edit('❌ Нельзя заглушить админа')
                 return
-            cursor.execute('SELECT 1 FROM muted_users WHERE user_id=? AND muted_by=?', (tid, owner_id))
-            if cursor.fetchone():
+            if tid in muted_users:
                 await event.edit('🔇 Уже заглушен')
                 return
             cursor.execute('INSERT INTO muted_users (user_id, muted_by, muted_at) VALUES (?, ?, ?)',
